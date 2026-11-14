@@ -11,7 +11,7 @@ export default {
     'Bastion: beginner-friendly CyberPatriot checklists, guides, tools and hardening scripts for Windows, Windows Server, Linux Mint, Debian, Ubuntu and FreeBSD.',
 
   /** Public address of the deployed site (canonical links, sitemap). */
-  siteUrl: process.env.SITE_URL || 'https://cp-toolkit.pages.dev',
+  siteUrl: process.env.SITE_URL || 'https://bastion.pages.dev',
 
   /** GitHub "owner/name" of the repository that holds this site. Used for Edit links and downloads. */
   repo: process.env.SITE_REPO || 'plzgimmeaname/cyberpatriot-toolkit',

@@ -21,7 +21,7 @@ const flow = [
   { n: 1, title: 'README', text: 'Admins, users, critical services.', href: '/tools/config-builder/', link: 'Config builder' },
   { n: 2, title: 'Snapshot + forensics', text: 'Answer before changing anything.', href: '/guides/forensics-questions/', link: 'Forensics' },
   { n: 3, title: 'Script', text: 'Audit, Apply, paste the report.', href: '/tools/findings/', link: 'Findings' },
-  { n: 4, title: 'Checklist', text: 'Tick ✅ steps, do 🔎 and ✋.', href: '#lists', link: 'Pick OS' },
+  { n: 4, title: 'Checklist', text: 'Run the script for Auto steps, then do Review and Manual ones.', href: '#lists', link: 'Pick OS' },
   { n: 5, title: 'Final checks', text: 'Critical services up, no penalties.', href: '/tools/round-timer/', link: 'Timer' },
 ];
 
@@ -68,7 +68,7 @@ const runCmds = [
     <section id="lists" aria-labelledby="tk-lists">
       <h2 id="tk-lists" class="tk__h">Checklists</h2>
       <p class="cp-hint tk__legend">
-        <span aria-hidden="true">✅</span> number = steps the script does for you. Ticks are saved in this browser.
+        The <strong>Auto</strong> count is the number of steps the script does for you. Ticks are saved in this browser.
       </p>
       <div class="tk__lists">
         {
@@ -80,7 +80,7 @@ const runCmds = [
                 {c.rounds || 'Legacy'} · {IMAGE_NAMES[c.image]}
               </span>
               <span class="tk__list-auto" title="Steps the script does fully">
-                ✅ {c.auto}
+                {c.auto} auto
               </span>
               <span class="cp-bar tk__bar">
                 <span class="cp-bar__fill" style="width:0%" />

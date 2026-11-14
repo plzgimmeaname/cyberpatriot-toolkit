@@ -37,7 +37,7 @@ After you change something in `docs/`, stop `npm run dev` and start it again so 
 
 1. Sign in to the [Cloudflare dashboard](https://dash.cloudflare.com/). A free account is enough.
 2. Go to **Workers & Pages → Create → Pages → Connect to Git**. Cloudflare sometimes moves these buttons; look for the option to create a **Pages** project from a Git repository.
-3. Allow Cloudflare to access GitHub and pick **`Ripper1004/CyberPatriot-Security-Script`**. Private repositories work too.
+3. Allow Cloudflare to access GitHub and pick **`plzgimmeaname/cyberpatriot-toolkit`**. Private repositories work too.
 4. Use these build settings:
 
    | Setting | Value |
@@ -47,11 +47,11 @@ After you change something in `docs/`, stop `npm run dev` and start it again so 
    | Build command | `npm run build` |
    | Build output directory | `dist` |
    | Root directory (under *Advanced*) | `site` |
-   | Environment variable (optional) | `SITE_URL`, only if your address is not `https://cp-toolkit.pages.dev` (e.g. a custom domain) |
+   | Environment variable (optional) | `SITE_URL`, only if your address is not your site address (e.g. a custom domain) |
 
 5. Click **Save and Deploy**. The first build takes 1–2 minutes. Your site is then at `https://<project-name>.pages.dev`.
 
-The live site is **https://cp-toolkit.pages.dev/**.
+
 
 From then on, every merge into `main` updates the site automatically, and every pull request gets its own preview link.
 
@@ -62,7 +62,7 @@ The Node.js version comes from `site/.node-version`. If a build ever complains a
 The site tells search engines not to index it (`robots.txt` and `X-Robots-Tag`), but anyone with the link can open it. To require a login:
 
 1. In the Cloudflare dashboard, open **Zero Trust** (free for up to 50 users).
-2. Go to **Access → Applications → Add an application → Self-hosted**, and enter your site's address (e.g. `cp-toolkit.pages.dev`).
+2. Go to **Access → Applications → Add an application → Self-hosted**, and enter your site's address (e.g. `your-project.pages.dev`).
 3. Add a policy that **allows** your students' email addresses, or everyone with your school's email domain.
 
 Students then get a one-time code by email before the site opens.

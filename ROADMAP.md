@@ -1,6 +1,6 @@
 # Roadmap
 
-Where the CyberPatriot Toolkit stands, how it's designed, and what's left. For how to *use* it, see the [README](README.md) or the website, **https://cp-toolkit.pages.dev/**.
+Where the CyberPatriot Toolkit stands, how it's designed, and what's left. For how to *use* it, see the [README](README.md) or the website, your deployed site (set its address in `site/site.config.mjs`).
 
 ---
 
@@ -14,7 +14,7 @@ The toolkit is **feature complete** for class use. What's left is mostly testing
 | Linux script | Done. Tested on Debian 12, Ubuntu 22.04, Ubuntu 24.04 and Linux Mint 21.3. |
 | Windows script | Done. Logic-tested only: **never run on a real Windows image.** |
 | FreeBSD script | Done. Logic-tested only: **never run on a real FreeBSD system.** |
-| Website | Live on Cloudflare Pages, behind a Cloudflare Access login (`@lposd.org` emails, one-time PIN). Script downloads under `/files/` stay open so images can fetch them from a terminal. |
+| Website | Astro + Starlight, deployable to Cloudflare Pages or any static host. Optional Cloudflare Access login; script downloads under `/files/` should stay open so images can fetch them from a terminal. Rebrand through `site/site.config.mjs`. |
 
 ---
 
