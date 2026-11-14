@@ -1,5 +1,14 @@
 # Website
 
+## Make it your own
+
+1. Fork or copy this repository.
+2. Edit **`site/site.config.mjs`**: site name, description, public URL, GitHub repo, accent colours, and the season's rounds and dates. That one file drives the header, theme, dashboard and Edit links.
+3. Optional overrides without editing the file: `SITE_TITLE`, `SITE_URL`, `SITE_REPO`, `SITE_NOINDEX=false` (set these as build environment variables on your host).
+4. Swap `src/assets/logo.svg` and `public/favicon.svg` for your own logo.
+5. To make the site public and searchable: set `noindex: false`, delete the `X-Robots-Tag` line in `public/_headers` and replace `public/robots.txt`.
+6. Add or edit pages in `../docs/` (see below), then `npm run dev` to preview and `npm test` before you push.
+
 The CyberPatriot Toolkit website: [Astro](https://astro.build/) + [Starlight](https://starlight.astro.build/), hosted on **Cloudflare Pages**.
 
 **The content is not in this folder.** At build time, `scripts/sync-docs.mjs` copies `../docs/**/*.md` and `../scripts/` into the site. To change a checklist or guide, edit the file in [`docs/`](../docs). Never edit `src/content/docs/checklists|guides|start-here`: those folders are generated and git-ignored.

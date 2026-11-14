@@ -8,9 +8,9 @@
   --cp-font-display: 'Space Grotesk Variable', 'Space Grotesk', var(--sl-font);
 
   /* Dark mode (default): neutral charcoal, not navy */
-  --sl-color-accent-low: #0e2a3c;
-  --sl-color-accent: #38bdf8;
-  --sl-color-accent-high: #c4e9fd;
+  --sl-color-accent-low: #1b2147;
+  --sl-color-accent: #8da2ff;
+  --sl-color-accent-high: #dbe1ff;
   --sl-color-white: #ffffff;
   --sl-color-gray-1: #eceef2;
   --sl-color-gray-2: #c4c9d2;
@@ -36,9 +36,9 @@
   --cp-well: var(--sl-color-black); /* background of segmented controls */
   --cp-border: #292e37;
   --cp-shadow: 0 1px 2px rgb(0 0 0 / 0.25), 0 6px 20px -12px rgb(0 0 0 / 0.5);
-  --cp-glow: radial-gradient(50rem 26rem at 80% -12%, rgb(56 189 248 / 0.09), transparent 65%);
+  --cp-glow: radial-gradient(50rem 26rem at 80% -12%, rgb(141 162 255 / 0.10), transparent 65%);
   --cp-grid-line: rgb(255 255 255 / 0.035);
-  --cp-gradient: linear-gradient(135deg, #38bdf8 0%, #2563eb 100%);
+  --cp-gradient: linear-gradient(135deg, #8da2ff 0%, #5b3fd9 100%);
 
   --cp-os-windows: #3b82f6;
   --cp-os-server: #6366f1;
@@ -50,9 +50,9 @@
 
 /* Light mode: warm off-white paper, near-black ink */
 :root[data-theme='light'] {
-  --sl-color-accent-low: #e2edf9;
-  --sl-color-accent: #0a5fb8;
-  --sl-color-accent-high: #0a3566;
+  --sl-color-accent-low: #e8ebfd;
+  --sl-color-accent: #3d4fd6;
+  --sl-color-accent-high: #1e2a82;
   --sl-color-white: #17161a;
   --sl-color-gray-1: #24232a;
   --sl-color-gray-2: #3d3b42;
@@ -75,6 +75,6 @@
   --cp-well: var(--sl-color-gray-6);
   --cp-border: #e3dfd6;
   --cp-shadow: 0 1px 2px rgb(40 30 10 / 0.05), 0 8px 22px -14px rgb(40 30 10 / 0.2);
-  --cp-glow: radial-gradient(50rem 26rem at 80% -12%, rgb(10 95 184 / 0.07), transparent 65%);
+  --cp-glow: radial-gradient(50rem 26rem at 80% -12%, rgb(61 79 214 / 0.07), transparent 65%);
   --cp-grid-line: rgb(40 30 10 / 0.045);
 }

@@ -1,0 +1,62 @@
+/* Apple-style finish: translucent chrome, size-specific tracking, instant press
+   feedback, springy-but-interruptible transitions, accessibility fallbacks. */
+
+:root {
+  --cp-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --cp-spring: linear(0, 0.35 8%, 0.78 18%, 1.04 30%, 1.05 38%, 0.99 52%, 1 70%, 1);
+}
+
+/* Tracking and leading change with size */
+h1#_top,
+.sl-markdown-content h1 {
+  letter-spacing: -0.03em;
+  line-height: 1.05;
+  font-optical-sizing: auto;
+}
+.sl-markdown-content h2 { letter-spacing: -0.02em; line-height: 1.15; }
+.sl-markdown-content h3 { letter-spacing: -0.012em; line-height: 1.25; }
+.sl-markdown-content p,
+.sl-markdown-content li { line-height: 1.65; letter-spacing: 0; }
+small, .cp-hint, .cp-pill { letter-spacing: 0.01em; }
+
+/* Translucent header: content scrolls underneath */
+header.header {
+  background: color-mix(in srgb, var(--sl-color-black) 68%, transparent);
+  -webkit-backdrop-filter: blur(22px) saturate(180%);
+  backdrop-filter: blur(22px) saturate(180%);
+  border-bottom: 0;
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--sl-color-white) 8%, transparent);
+}
+
+/* Cards: soft depth, lift on hover, press on pointer-down (not on release) */
+.cp-card {
+  transition: transform 0.45s var(--cp-ease), box-shadow 0.45s var(--cp-ease), background-color 0.2s;
+  box-shadow: var(--cp-shadow);
+}
+a.cp-card:hover { transform: translateY(-2px); }
+a.cp-card:active { transform: scale(0.985); transition-duration: 0.08s; }
+
+/* Buttons respond instantly */
+.cp-btn, .sl-link-button {
+  transition: transform 0.4s var(--cp-spring), background-color 0.2s, box-shadow 0.2s;
+}
+.cp-btn:active, .sl-link-button:active { transform: scale(0.96); transition-duration: 0.06s; }
+.cp-btn--primary, .sl-link-button.primary { background-image: var(--cp-gradient); border-color: transparent; color: #fff; }
+
+/* Visible, consistent keyboard focus */
+:focus-visible { outline: 2px solid var(--sl-color-accent); outline-offset: 2px; border-radius: 4px; }
+
+html { scroll-behavior: smooth; }
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
+  a.cp-card:hover { transform: none; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  header.header { background: var(--sl-color-black); -webkit-backdrop-filter: none; backdrop-filter: none; }
+}
+@media (prefers-contrast: more) {
+  header.header { background: var(--sl-color-black); }
+  .cp-card { border-color: var(--sl-color-gray-3); }
+}

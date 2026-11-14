@@ -3,11 +3,10 @@ import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 import starlightLinksValidator from 'starlight-links-validator';
 import { CHECKLISTS, LEARNING_PATH, REPO_URL } from './src/data/catalog.mjs';
+import config from './site.config.mjs';
 
-// The site's public address, used for canonical links and the sitemap.
-// Override with a SITE_URL environment variable (e.g. for a custom domain).
-// CF_PAGES_URL is not used: it is the one-off address of each deployment.
-const site = process.env.SITE_URL || 'https://cp-toolkit.pages.dev';
+const site = config.siteUrl;
+const { accent } = config;
 
 /** @type {Record<string, { text: string; variant: 'note' | 'default' }>} */
 const checklistBadges = {
@@ -24,9 +23,8 @@ export default defineConfig({
   trailingSlash: 'always',
   integrations: [
     starlight({
-      title: 'CyberPatriot Toolkit',
-      description:
-        'Beginner-friendly CyberPatriot checklists, guides, tools and hardening scripts for Windows, Windows Server, Linux Mint, Debian, Ubuntu and FreeBSD.',
+      title: config.title,
+      description: config.description,
       logo: { src: './src/assets/logo.svg', alt: '' },
       favicon: '/favicon.svg',
       social: [{ icon: 'github', label: 'GitHub repository', href: REPO_URL }],
@@ -37,6 +35,7 @@ export default defineConfig({
         '@fontsource-variable/space-grotesk',
         './src/styles/theme.css',
         './src/styles/site.css',
+        './src/styles/polish.css',
         './src/styles/print.css',
       ],
       components: {
@@ -48,7 +47,11 @@ export default defineConfig({
       },
       head: [
         { tag: 'meta', attrs: { name: 'theme-color', content: '#0b1220' } },
-        { tag: 'meta', attrs: { name: 'robots', content: 'noindex' } },
+        ...(config.noindex ? [{ tag: 'meta', attrs: { name: 'robots', content: 'noindex' } }] : []),
+        {
+          tag: 'style',
+          content: `:root{--sl-color-accent-low:${accent.darkLow};--sl-color-accent:${accent.dark};--sl-color-accent-high:${accent.darkHigh};--cp-gradient:linear-gradient(135deg,${accent.gradient[0]} 0%,${accent.gradient[1]} 100%)}:root[data-theme='light']{--sl-color-accent-low:${accent.lightLow};--sl-color-accent:${accent.light};--sl-color-accent-high:${accent.lightHigh}}`,
+        },
       ],
       tableOfContents: { minHeadingLevel: 2, maxHeadingLevel: 3 },
       expressiveCode: {

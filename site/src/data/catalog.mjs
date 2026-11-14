@@ -1,21 +1,14 @@
 // Single place that describes the site's content. Used by the docs sync
 // script (Node) and by the Astro pages, so it is plain JavaScript.
 
-export const REPO = 'Ripper1004/CyberPatriot-Security-Script';
-export const REPO_URL = `https://github.com/${REPO}`;
-export const BRANCH = 'main';
+import config from '../../site.config.mjs';
 
-/** CyberPatriot 19 (2026-27) competition rounds and their images. */
-export const SEASON = {
-  name: 'CyberPatriot 19',
-  years: '2026–27',
-  rounds: [
-    { id: 'r1', name: 'Round 1', dates: 'Oct 22–25, 2026', images: ['windows', 'mint'] },
-    { id: 'r2', name: 'Round 2', dates: 'Nov 12–15, 2026', images: ['windows', 'server', 'debian'] },
-    { id: 'state', name: 'State Round', dates: 'Dec 10–13, 2026', images: ['server', 'mint', 'debian'] },
-    { id: 'semis', name: 'Semifinals', dates: 'Jan 21–23, 2027', images: ['mint', 'server', 'debian', 'freebsd'] },
-  ],
-};
+export const REPO = config.repo;
+export const REPO_URL = `https://github.com/${REPO}`;
+export const BRANCH = config.branch;
+
+/** Competition season and its rounds (edit in site.config.mjs). */
+export const SEASON = config.season;
 
 /**
  * One entry per checklist page in docs/checklists.
