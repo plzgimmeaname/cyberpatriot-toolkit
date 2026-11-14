@@ -31,6 +31,10 @@
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File .\Harden.ps1 -Mode Apply -Only users,passwords,firewall
     Run only some sections (see -List).
+
+.EXAMPLE
+    powershell -ExecutionPolicy Bypass -File .\Harden.ps1 -Mode Audit -Quick
+    Only the fast, high-value sections (skips the slow disk and persistence scans).
 #>
 [CmdletBinding()]
 param(
@@ -39,10 +43,12 @@ param(
     [switch]$Yes,
     [string]$Config,
     [string[]]$Only,
-    [switch]$List
+    [switch]$List,
+    [switch]$Quick
 )
 
 $ScriptVersion = '2.0.0'
+$script:StartTime = Get-Date
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
 
@@ -70,6 +76,12 @@ $Sections = @(
     @{ Id = 'updates';   Title = 'Windows Update';                                     Fn = 'Invoke-Updates' }
 )
 
+if ($Quick -and -not $Only) { $Only = @('users', 'passwords', 'security', 'rights', 'firewall', 'services', 'features', 'remote', 'shares', 'software', 'updates') }
+if ($Only) {   # reject typos before anything runs
+    $unknown = @($Only -join ',' -split '[\s,]+' | Where-Object { $_ -and ($Sections.Id -notcontains $_) })
+    if ($unknown.Count -gt 0) { Write-Host "Unknown section(s): $($unknown -join ', ') (use -List)" -ForegroundColor Red; return }
+}
+
 if ($List) {
     foreach ($s in $Sections) { Write-Host ('  {0,-10} {1}' -f $s.Id, $s.Title) }
     return
@@ -86,6 +98,7 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
     if ($Yes)    { $relaunch += '-Yes' }
     if ($Config) { $relaunch += @('-Config', "`"$((Resolve-Path $Config).Path)`"") }
     if ($Only)   { $relaunch += @('-Only', ($Only -join ',')) }
+    if ($Quick)  { $relaunch += '-Quick' }
     Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $relaunch
     return
 }
@@ -1971,6 +1984,12 @@ function Show-Summary {
         Write-Host ''; Write-Host '  Failed:' -ForegroundColor Red
         foreach ($r in @($script:Results | Where-Object { $_.Status -eq 'FAILED' })) { Write-Host "    - $($r.Text)" -ForegroundColor Red }
     }
+    $attention = @($script:Results | Where-Object { $_.Status -in @('REVIEW', 'WOULD') } | Group-Object Section | Sort-Object Name)
+    if ($attention.Count -gt 0) {
+        Write-Host ''; Write-Host '  Needs attention, by section (REVIEW + WOULD):'
+        foreach ($g in $attention) { Write-Host ("    {0}: {1}" -f $g.Name, $g.Count) }
+    }
+    Write-Host ("  Finished in {0}s." -f [int]((Get-Date) - $script:StartTime).TotalSeconds)
     Write-Host ''
     Write-Host "  Your to-do list (REVIEW items): $ReportFile"
     Write-Host "  Full log:                       $LogFile"

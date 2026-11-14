@@ -16,6 +16,7 @@
 #    sh harden.sh --apply --yes        fix problems without asking
 #    sh harden.sh --config FILE        read README info from FILE (same format as the Linux one)
 #    sh harden.sh --only users,ssh     run only some sections (see --list)
+#    sh harden.sh --quick              only the fast, high-value sections
 #
 #  Logs and backups: /root/cyberpatriot/
 # =============================================================================
@@ -711,6 +712,7 @@ sec_updates() {
 summary() {
   header "Summary"
   for _s in OK CHANGED WOULD SKIPPED REVIEW FAILED; do printf '  %s %s  ' "$_s" "$(grep -c "^$_s|" "$RESULTS_FILE" 2>/dev/null)"; done; echo
+  echo "  Finished in $(( $(date +%s) - ${START_TS:-$(date +%s)} ))s."
   echo "  To-do list: $REPORT_FILE"
   echo "  Log:        $LOG_FILE"
   echo "  Backups:    $BACKUP_DIR"
@@ -748,10 +750,12 @@ menu() {
   done
 }
 
+START_TS=$(date +%s)
 while [ $# -gt 0 ]; do
   case $1 in
     --audit) MODE=audit ;; --apply) MODE=apply ;; -y|--yes) ASSUME_YES=1 ;;
     --config) CONFIG_FILE=$2; shift ;; --only) ONLY=$2; shift ;;
+    --quick) ONLY='users passwords firewall ssh services software kernel sudo updates' ;;
     --list) echo "$SECTIONS" | tr ' ' '\n'; exit 0 ;;
     -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
     *) echo "Unknown option $1 (try --help)"; exit 1 ;;

@@ -22,7 +22,7 @@ fi
 status=0
 for img in "${IMAGES[@]}"; do
   echo "################ $img ################"
-  if docker run --rm "${extra[@]}" -v "$REPO:/repo:ro" "$img" bash /repo/tests/linux/in-container.sh; then
+  if docker run --rm ${extra[@]+"${extra[@]}"} -v "$REPO:/repo:ro" "$img" bash /repo/tests/linux/in-container.sh; then
     echo "################ $img: ALL PASSED"
   else
     echo "################ $img: FAILURES"; status=1

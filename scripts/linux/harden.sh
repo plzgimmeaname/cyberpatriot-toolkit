@@ -18,6 +18,7 @@
 #    sudo bash harden.sh --apply --yes      fix problems, answer "yes" to prompts
 #    sudo bash harden.sh --config FILE      load README info from a config file
 #    sudo bash harden.sh --only users,ssh   run only some sections
+#    sudo bash harden.sh --quick            only the fast, high-value sections
 #    sudo bash harden.sh --list             list the sections
 #    sudo bash harden.sh --help             show this help
 #
@@ -49,6 +50,7 @@ FULL_UPGRADE="ask"       # run a full apt upgrade: yes | no | ask
 SSH_PASSWORD_AUTH="keep" # PasswordAuthentication in sshd: yes | no | keep
 EXTRA_PORTS=""           # extra firewall ports to allow, e.g. "8080/tcp 5000"
 
+START_SECONDS=$SECONDS
 RUN_ID=$(date +%Y%m%d-%H%M%S)
 WORK_DIR="/root/cyberpatriot"
 BACKUP_DIR="$WORK_DIR/backups/$RUN_ID"
@@ -199,6 +201,7 @@ run() {
 fix() {
   local desc=$1; shift
   if [[ $MODE == audit ]]; then result WOULD "$desc"; return 0; fi
+  [[ $1 == apt-get || $1 == dpkg ]] && pkg_cache_reset   # packages are about to change
   if run "$@"; then result CHANGED "$desc"; return 0; fi
   result FAILED "$desc (details in $LOG_FILE)"
   return 1
@@ -385,7 +388,23 @@ detect_os() {
   fi
 }
 
-pkg_installed() { dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q "ok installed"; }
+# pkg_installed answers from ONE dpkg-query run (cached); the cache is dropped
+# whenever this script installs or removes packages (pkg_cache_reset).
+declare -A PKG_INSTALLED=()
+PKG_CACHE_READY=0
+pkg_cache_reset() { PKG_INSTALLED=(); PKG_CACHE_READY=0; }
+pkg_cache_load() {
+  local name state
+  PKG_INSTALLED=()
+  while read -r name state; do
+    [[ $state == installed ]] && PKG_INSTALLED["${name%%:*}"]=1
+  done < <(dpkg-query -W -f='${Package} ${db:Status-Status}\n' 2>/dev/null)
+  PKG_CACHE_READY=1
+}
+pkg_installed() {
+  [[ $PKG_CACHE_READY -eq 1 ]] || pkg_cache_load
+  [[ -n ${PKG_INSTALLED[$1]:-} ]]
+}
 
 APT_UPDATED=0
 apt_update_once() {
@@ -1131,11 +1150,18 @@ PROTECTED_RE='^(ubuntu-desktop|ubuntu-desktop-minimal|ubuntu-standard|ubuntu-min
 
 remove_packages() {
   local category=$1; shift
-  local p removed safe=() blocked=()
-  for p in "$@"; do
-    removed=$(apt-get -s purge "$p" 2>/dev/null | awk '/^(Remv|Purg) /{print $2}')
-    if grep -Eq "$PROTECTED_RE" <<<"$removed"; then blocked+=("$p"); else safe+=("$p"); fi
-  done
+  local p removed all safe=() blocked=()
+  # One simulated purge for the whole list; only if it would touch a core package
+  # do we test the packages one by one to find out which one is the culprit.
+  all=$(apt-get -s purge "$@" 2>/dev/null | awk '/^(Remv|Purg) /{print $2}')
+  if grep -Eq "$PROTECTED_RE" <<<"$all"; then
+    for p in "$@"; do
+      removed=$(apt-get -s purge "$p" 2>/dev/null | awk '/^(Remv|Purg) /{print $2}')
+      if grep -Eq "$PROTECTED_RE" <<<"$removed"; then blocked+=("$p"); else safe+=("$p"); fi
+    done
+  else
+    safe=("$@")
+  fi
   for p in "${blocked[@]}"; do
     result REVIEW "Not removing '$p' automatically: it would also remove core system packages. Remove it by hand if needed."
   done
@@ -2645,6 +2671,14 @@ print_summary() {
     for r in "${RESULTS[@]}"; do [[ ${r%%|*} == FAILED ]] && say "    - ${r#*|*|}"; done
   fi
   say ""
+  if [[ $re -gt 0 || $wo -gt 0 ]]; then
+    say ""; say "  Needs attention, by section (REVIEW + WOULD):"
+    for r in "${RESULTS[@]}"; do
+      case ${r%%|*} in REVIEW|WOULD) r=${r#*|}; printf '%s\n' "${r%%|*}" ;; esac
+    done | sort | uniq -c | while read -r n sec; do say "    $sec: $n"; done
+  fi
+  say "  Finished in $((SECONDS - START_SECONDS))s."
+  say ""
   say "  Your to-do list (REVIEW items): ${C_BLD}$REPORT_FILE${C_RST}"
   say "  Full log:                       $LOG_FILE"
   [[ -d $BACKUP_DIR ]] && say "  Backups of edited files:        $BACKUP_DIR"
@@ -2727,6 +2761,7 @@ Supports Linux Mint 20-22, Debian 11-12 and Ubuntu 20.04-24.04.
   sudo bash harden.sh --apply --yes      fix problems without asking
   sudo bash harden.sh --config FILE      read README info from FILE (see config.example.conf)
   sudo bash harden.sh --only a,b,c       run only these sections (see --list)
+  sudo bash harden.sh --quick            only the fast, high-value sections (skips the slow disk scans)
   sudo bash harden.sh --list             list the sections
   sudo bash harden.sh --no-color         plain output
 
@@ -2744,6 +2779,7 @@ main() {
       -y|--yes) ASSUME_YES=1 ;;
       --config) CONFIG_FILE=${2:-}; shift ;;
       --only) ONLY_SECTIONS=${2:-}; shift ;;
+      --quick) ONLY_SECTIONS="users,passwords,firewall,ssh,services,software,kernel,sudoers,updates" ;;
       --list) list_only=1 ;;
       --no-color) NO_COLOR=1 ;;
       -h|--help) usage; exit 0 ;;
@@ -2755,6 +2791,11 @@ main() {
   if [[ $list_only -eq 1 ]]; then
     for entry in "${SECTIONS[@]}"; do IFS='|' read -r id title _ <<<"$entry"; printf '  %-12s %s\n' "$id" "$title"; done
     exit 0
+  fi
+  if [[ -n $ONLY_SECTIONS ]]; then   # reject typos before anything runs
+    for id in ${ONLY_SECTIONS//,/ }; do
+      [[ "|${SECTIONS[*]}" == *"|$id|"* || "${SECTIONS[*]}" == "$id|"* || "${SECTIONS[*]}" == *" $id|"* ]] || die "Unknown section '$id' (see --list)"
+    done
   fi
   [[ $EUID -eq 0 ]] || die "Please run this as root:   sudo bash $0"
   # New folders and files must not be world-writable (umask 0000) or unreadable
