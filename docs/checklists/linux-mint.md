@@ -1026,7 +1026,7 @@ sudo ss -tulpn
 ### 13.4 Start-up files and fake commands
 - [ ] Done
 
-**Script:** 🔎 The script comments out suspicious lines and fake aliases in shell start-up files (it asks first); `rc.local`, `/etc/profile.d` and fake commands are only listed under REVIEW.
+**Script:** 🔎 The script comments out suspicious lines and fake aliases in shell start-up files and in `/etc/rc.local`, which runs as root at every boot (it asks first); fake commands are only listed under REVIEW.
 
 ```bash
 cat /etc/rc.local 2>/dev/null

@@ -5,6 +5,20 @@ import UiIcon from '../components/UiIcon.astro';
 import type { UiIconName } from '../data/icons';
 import { CHECKLISTS, IMAGE_NAMES, lessons, pages, roundsFor, SEASON } from '../data/site';
 
+/** One round of the season, as configured in site.config.mjs. Points are the official CP-19 values. */
+type SeasonRound = {
+  id: string;
+  name: string;
+  dates: string;
+  images: string[];
+  imagePoints?: Record<string, number>;
+  cisco?: number;
+  web?: number;
+  total?: number;
+  note?: string;
+};
+const seasonRounds = SEASON.rounds as SeasonRound[];
+
 const osMark: Record<string, string> = {
   windows: 'W',
   server: 'WS',
@@ -204,20 +218,32 @@ const rules = [
       <p class="cp-section-sub">Which images appear in which round this season ({SEASON.years}), for reference.</p>
       <ol class="cp-timeline">
         {
-          SEASON.rounds.map((r) => (
+          seasonRounds.map((r) => (
             <li class="cp-timeline__item">
               <p class="cp-timeline__dates">{r.dates}</p>
               <p class="cp-timeline__name">{r.name}</p>
               <div class="cp-timeline__images">
                 {r.images.map((img) => {
                   const c = CHECKLISTS.find((x) => x.image === img);
+                  const pts = r.imagePoints?.[img];
                   return c ? (
-                    <a class={`cp-chip cp-chip--${img}`} href={withBase(`/checklists/${c.id}/`)}>
+                    <a
+                      class={`cp-chip cp-chip--${img}`}
+                      href={withBase(`/checklists/${c.id}/`)}
+                      title={pts ? `${IMAGE_NAMES[img]}: ${pts} points` : IMAGE_NAMES[img]}
+                    >
                       {IMAGE_NAMES[img]}
+                      {pts ? <span class="cp-chip__pts">{pts}</span> : null}
                     </a>
                   ) : null;
                 })}
               </div>
+              <p class="cp-timeline__points">
+                {r.total} points
+                {r.cisco ? ` · ${r.cisco} from Cisco` : ''}
+                {r.web ? ` + ${r.web} web challenge` : ''}
+                {r.note ? ` · ${r.note}` : ''}
+              </p>
             </li>
           ))
         }
@@ -588,6 +614,17 @@ const rules = [
     display: flex;
     flex-wrap: wrap;
     gap: 0.35rem;
+  }
+  .cp-chip__pts {
+    margin-left: 0.35rem;
+    color: var(--sl-color-gray-3);
+    font-variant-numeric: tabular-nums;
+    font-weight: 500;
+  }
+  .cp-timeline__points {
+    margin: 0.6rem 0 0;
+    color: var(--sl-color-gray-3);
+    font-size: var(--sl-text-xs);
   }
   .cp-chip {
     padding: 0.2rem 0.6rem;

@@ -47,12 +47,13 @@ export default {
     name: 'CyberPatriot 19',
     years: '2026–27',
     rounds: [
-      { id: 'r1', name: 'Round 1', dates: 'Oct 22–25, 2026', images: ['windows', 'mint'] },
+      // Points are the official CyberPatriot 19 scoring values (see the challenges page link above).
+      { id: 'r1', name: 'Round 1', dates: 'Oct 22–25, 2026', images: ['windows', 'mint'], imagePoints: { windows: 100, mint: 100 }, cisco: 30, total: 230 },
       // Image lists follow the official CP-19 challenges page, not older seasons:
       // https://www.uscyberpatriot.org/competition/current-competition/challenges-by-round
-      { id: 'r2', name: 'Round 2', dates: 'Nov 12–15, 2026', images: ['windows', 'server', 'mint'] },
-      { id: 'state', name: 'State Round', dates: 'Dec 10–13, 2026', images: ['server', 'mint', 'ubuntu'] },
-      { id: 'semis', name: 'Semifinals', dates: 'Jan 21–23, 2027', images: ['mint', 'server'] },
+      { id: 'r2', name: 'Round 2', dates: 'Nov 12–15, 2026', images: ['windows', 'server', 'mint'], imagePoints: { windows: 100, server: 100, mint: 100 }, cisco: 30, total: 330 },
+      { id: 'state', name: 'State Round', dates: 'Dec 10–13, 2026', images: ['server', 'mint', 'ubuntu'], imagePoints: { server: 100, mint: 100, ubuntu: 100 }, cisco: 100, total: 400 },
+      { id: 'semis', name: 'Semifinals', dates: 'Jan 21–23, 2027', images: ['mint', 'server'], imagePoints: { mint: 100, server: 100 }, cisco: 240, web: 80, total: 620, note: 'Platinum tier (480 Gold, 300 Silver)' },
     ],
   },
 };

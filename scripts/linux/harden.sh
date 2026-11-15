@@ -28,7 +28,7 @@
 
 if [ -z "${BASH_VERSION:-}" ]; then echo "Please run this script with bash:  sudo bash $0" >&2; exit 1; fi
 
-SCRIPT_VERSION="2.1.0"
+SCRIPT_VERSION="2.1.1"
 
 # ----------------------------------------------------------------------------
 # Settings (filled in from the command line, the config file, or prompts)
@@ -1818,10 +1818,29 @@ sec_backdoors() {
     done
   done
 
-  if [[ -f /etc/rc.local ]] && grep -Ev '^[[:space:]]*(#|$|exit 0)' /etc/rc.local | grep -q .; then
-    result REVIEW "/etc/rc.local runs commands at boot - check them"
-    mapfile -t crons < <(grep -Ev '^[[:space:]]*(#|$|exit 0)' /etc/rc.local)
-    show_list 5 "${crons[@]}"
+  if [[ -f /etc/rc.local ]]; then
+    local -a rc_lines rc_bad
+    mapfile -t rc_lines < <(grep -Ev '^[[:space:]]*(#|$|exit 0)' /etc/rc.local 2>/dev/null)
+    if [[ ${#rc_lines[@]} -gt 0 ]]; then
+      # /etc/rc.local runs as root at boot, so a backdoor here survives every reboot.
+      mapfile -t rc_bad < <(grep -nE "$SUSPICIOUS_RE" /etc/rc.local 2>/dev/null | grep -Ev '^[0-9]+:[[:space:]]*#')
+      if [[ ${#rc_bad[@]} -gt 0 ]]; then
+        result REVIEW "/etc/rc.local has ${#rc_bad[@]} suspicious line(s) that run as root at boot"
+        show_list 5 "${rc_bad[@]}"
+        if ask "Comment out the suspicious line(s) in /etc/rc.local?" y; then
+          stage_begin /etc/rc.local
+          for line in "${rc_bad[@]}"; do n=${line%%:*}; stage_sed "${n}s/^/# disabled by harden.sh: /" "line $n"; done
+          stage_commit "/etc/rc.local boot script"
+        fi
+        mapfile -t rc_lines < <(grep -Ev '^[[:space:]]*(#|$|exit 0)' /etc/rc.local 2>/dev/null)
+      fi
+      if [[ ${#rc_lines[@]} -gt 0 ]]; then
+        result REVIEW "/etc/rc.local runs commands at boot - check them"
+        show_list 5 "${rc_lines[@]}"
+      else
+        result OK "/etc/rc.local no longer runs anything at boot"
+      fi
+    fi
   fi
   local -a initd
   mapfile -t initd < <(find /etc/init.d -maxdepth 1 -type f 2>/dev/null | not_owned)

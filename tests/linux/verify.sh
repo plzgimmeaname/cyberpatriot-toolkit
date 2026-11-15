@@ -47,6 +47,7 @@ check "localhost entry kept in hosts"            'grep -Eq "^127\.0\.0\.1[[:spac
 check "malicious system cron job deleted"        '[ ! -e /etc/cron.d/updater ]'
 check "unauthorized user's crontab deleted"      '[ ! -e /var/spool/cron/crontabs/eve ]'
 check "fake sudo alias disabled"                 '! grep -E "^[[:space:]]*alias sudo=" /home/bob/.bashrc'
+check "rc.local boot backdoor disabled"          '! grep -E "^[^#]*/dev/tcp/" /etc/rc.local'
 check "root's planted SSH key removed"           '[ ! -e /root/.ssh/authorized_keys ]'
 check "ld.so.preload disabled"                   '[ ! -e /etc/ld.so.preload ]'
 # kernel

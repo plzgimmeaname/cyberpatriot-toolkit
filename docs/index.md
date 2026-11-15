@@ -12,14 +12,16 @@ Step-by-step checklists, beginner guides and hardening scripts for practicing **
 
 ## Pick your checklist
 
-| Operating system | CyberPatriot 19 rounds | Checklist |
-|---|---|---|
-| **Windows 11** (and 10) | Round 1, Round 2 | [Windows 10 / 11](checklists/windows-10-11.md) |
-| **Windows Server 2022** (2016/2019) | Round 2, State, Semifinals | [Windows Server](checklists/windows-server.md) |
-| **Linux Mint 21** | Round 1, Round 2, State, Semifinals | [Linux Mint](checklists/linux-mint.md) |
-| **Ubuntu 24** | State round (22 in the training rounds) | [Ubuntu](checklists/ubuntu.md) |
-| **Debian 12** | Not in CP-19 (older images) | [Debian](checklists/debian.md) |
-| **FreeBSD** | Not in CP-19 | [FreeBSD](checklists/freebsd.md) |
+| Operating system | CyberPatriot 19 rounds | Points per round | Checklist |
+|---|---|---|---|
+| **Windows 11** (and 10) | Round 1, Round 2 | 100 | [Windows 10 / 11](checklists/windows-10-11.md) |
+| **Windows Server 2022** (2016/2019) | Round 2, State, Semifinals | 100 | [Windows Server](checklists/windows-server.md) |
+| **Linux Mint 21** | Round 1, Round 2, State, Semifinals | 100 | [Linux Mint](checklists/linux-mint.md) |
+| **Ubuntu 24** | State round (22 in the training rounds) | 100 | [Ubuntu](checklists/ubuntu.md) |
+| **Debian 12** | Not in CP-19 (older images) | — | [Debian](checklists/debian.md) |
+| **FreeBSD** | Not in CP-19 | — | [FreeBSD](checklists/freebsd.md) |
+
+The Cisco networking challenge is worth **30 points** in Round 1, **30** in Round 2, **100** in the State round and **240** in the Semifinals, plus **80** for the web-based challenge in the Semifinals. Totals: Round 1 **230**, Round 2 **330**, State **400**, Semifinals **620** (Platinum; 480 Gold, 300 Silver).
 
 ## Guides
 

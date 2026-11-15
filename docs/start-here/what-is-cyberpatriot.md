@@ -34,12 +34,14 @@ After each round CyberPatriot publishes the general categories of problems. They
 
 ## This season's images (CyberPatriot 19, 2026-27)
 
-| Round | Images |
-|---|---|
-| Round 1 | Windows 11, Linux Mint 21 |
-| Round 2 | Windows 11, Windows Server 2022, Linux Mint 21 |
-| State | Windows Server 2022, Linux Mint 21, Ubuntu 24 |
-| Semifinals | Linux Mint 21, Windows Server 2022 (plus Server 2019 in the Platinum and Gold tiers) |
+| Round | Images (points each) | Cisco | Total |
+|---|---|---|---|
+| Round 1 | Windows 11 (100), Linux Mint 21 (100) | 30 | **230** |
+| Round 2 | Windows 11 (100), Windows Server 2022 (100), Linux Mint 21 (100) | 30 | **330** |
+| State | Windows Server 2022 (100), Linux Mint 21 (100), Ubuntu 24 (100) | 100 | **400** |
+| Semifinals | Linux Mint 21 (100), Windows Server 2022 (100), Server 2019 (100 in Platinum/Gold) | 240 + 80 web | **620** (Platinum: 480 Gold, 300 Silver) |
+
+Every image is worth the same 100 points, so on a round with two or three images the fastest win is the image you know best. The Cisco part is 30 of 330 points in Round 2: do it, but do not lose an image to it.
 
 Checklists also cover **Windows 10**, **Server 2019**, **Ubuntu 22** and **Debian 12**, which appear on older practice images. Debian and FreeBSD are not in the CyberPatriot 19 rounds.
 
