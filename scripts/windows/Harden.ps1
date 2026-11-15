@@ -435,6 +435,15 @@ function Get-NewPasswordPlain {
     }
 }
 
+# The operator types the new password (or the config file holds it) as plain text, so somewhere it has to become a
+# SecureString. Doing it here means the one place that needs the plain-text conversion says why it does.
+function ConvertTo-SecurePassword {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingConvertToSecureStringWithPlainText', '',
+        Justification = 'The password is typed by the person running the script or comes from their config file; there is no encrypted form to convert. It stays in memory and is never written to disk.')]
+    param([string]$PlainText)
+    return (ConvertTo-SecureString -String $PlainText -AsPlainText -Force)
+}
+
 # ===========================================================================
 # SECTION: Users and groups
 # ===========================================================================
@@ -502,7 +511,7 @@ function Invoke-Users {
                 if (-not $pw) { $pw = 'Tmp-' + [guid]::NewGuid().ToString('N').Substring(0, 12) + '!aA1'; Write-Warn "Temporary password for ${name}: $pw  (change it!)" }
                 $newName = $name
                 Invoke-Fix "Created user $newName" {
-                    New-LocalUser -Name $newName -Password (ConvertTo-SecureString $pw -AsPlainText -Force) -ErrorAction Stop | Out-Null
+                    New-LocalUser -Name $newName -Password (ConvertTo-SecurePassword $pw) -ErrorAction Stop | Out-Null
                     Add-LocalGroupMember -Group (Get-WellKnownName 'S-1-5-32-545' 'Users') -Member $newName -ErrorAction SilentlyContinue
                 } | Out-Null
             }
@@ -597,7 +606,7 @@ function Invoke-Users {
     if (-not $pw) { Add-Result 'REVIEW' "Passwords not changed - set strong ones by hand for: $($targets -join ' ')"; return }
     foreach ($t in $targets) {
         $who = $t
-        Invoke-Fix "Set a strong password for $who" { Set-LocalUser -Name $who -Password (ConvertTo-SecureString $pw -AsPlainText -Force) -ErrorAction Stop } | Out-Null
+        Invoke-Fix "Set a strong password for $who" { Set-LocalUser -Name $who -Password (ConvertTo-SecurePassword $pw) -ErrorAction Stop } | Out-Null
     }
 }
 
@@ -627,7 +636,7 @@ function Invoke-UsersAD {
                 $pw = Get-NewPasswordPlain
                 if (-not $pw) { $pw = 'Tmp-' + [guid]::NewGuid().ToString('N').Substring(0, 12) + '!aA1'; Write-Warn "Temporary password for ${name}: $pw  (change it!)" }
                 $newName = $name
-                Invoke-Fix "Created domain user $newName" { New-ADUser -Name $newName -SamAccountName $newName -AccountPassword (ConvertTo-SecureString $pw -AsPlainText -Force) -Enabled $true -ErrorAction Stop } | Out-Null
+                Invoke-Fix "Created domain user $newName" { New-ADUser -Name $newName -SamAccountName $newName -AccountPassword (ConvertTo-SecurePassword $pw) -Enabled $true -ErrorAction Stop } | Out-Null
             }
         }
     }
@@ -678,7 +687,7 @@ function Invoke-UsersAD {
     if (-not $pw) { Add-Result 'REVIEW' "Passwords not changed - set strong ones by hand for: $($targets -join ' ')"; return }
     foreach ($t in $targets) {
         $who = $t
-        Invoke-Fix "Set a strong password for $who" { Set-ADAccountPassword -Identity $who -Reset -NewPassword (ConvertTo-SecureString $pw -AsPlainText -Force) -ErrorAction Stop } | Out-Null
+        Invoke-Fix "Set a strong password for $who" { Set-ADAccountPassword -Identity $who -Reset -NewPassword (ConvertTo-SecurePassword $pw) -ErrorAction Stop } | Out-Null
     }
 }
 
