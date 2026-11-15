@@ -37,3 +37,7 @@ The Cisco networking challenge is worth **30 points** in Round 1, **30** in Roun
 - `scripts/linux/harden.sh`: Linux Mint, Debian, Ubuntu
 - `scripts/windows/Harden.ps1`: Windows 10/11, Windows Server (Domain Controller aware)
 - `scripts/freebsd/harden.sh`: FreeBSD
+
+## Credits
+
+This toolkit started as a copy of [Ripper1004/CyberPatriot-Toolkit](https://github.com/Ripper1004/CyberPatriot-Toolkit) (October 2024): the checklists, the lessons and the first hardening scripts came from there, and its commits are kept in this repository's history. Round dates, images and point values are checked against CyberPatriot's [published scoring values](https://www.uscyberpatriot.org/competition/current-competition/challenges-by-round).

@@ -3,6 +3,8 @@
 Beginner-friendly **checklists**, **guides** and **hardening scripts** for practicing CyberPatriot image challenges on Windows, Windows Server, Linux Mint, Debian, Ubuntu and FreeBSD.
 
 > **New to this?** Use the website: **https://plzgimmeaname.github.io/cyberpatriot-toolkit/**, or start at **[docs/index.md](docs/index.md)** here on GitHub. Both walk you through everything in order.
+>
+> Started by **[@Ripper1004](https://github.com/Ripper1004/CyberPatriot-Toolkit)** — see [Credits](#credits).
 
 ---
 
@@ -113,6 +115,14 @@ See [ROADMAP.md](ROADMAP.md): current status, how the scripts, checklists and we
 - Website changes: `cd site && npm install && npm test` (builds the site and checks every link). See [site/README.md](site/README.md).
 - Script changes: add a planted problem to `tests/linux/plant-vulns.sh` and a check to `tests/linux/verify.sh`, then run the tests.
 - Older versions of the scripts and checklists are in the git history.
+
+## Credits
+
+This project started as a copy of **[Ripper1004/CyberPatriot-Toolkit](https://github.com/Ripper1004/CyberPatriot-Toolkit)**, created in October 2024. The checklists, the lessons and the first hardening scripts came from there. Its commits are kept in this repository's history, so every original contribution is still visible in `git log` and `git log --author=Ripper1004`. The website, the later script versions and everything since then are maintained here.
+
+Thanks to **CyberPatriot** (the Air & Space Forces Association) for running the competition and publishing the round schedule and scoring values that the season pages are checked against.
+
+The upstream repository has no licence file, so no licence terms are inherited from it; this repository's code is provided "as is" (below). If you reuse this material, credit the original repository too.
 
 ## License
 Provided "as is".

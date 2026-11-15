@@ -20,6 +20,8 @@ cp:
 - The pages come from the Markdown files in the repository's [`docs/` folder](https://github.com/plzgimmeaname/cyberpatriot-toolkit/tree/main/docs), so the same checklists also read well on GitHub.
 - The site is built with [Astro](https://astro.build/) and [Starlight](https://starlight.astro.build/), and published to GitHub Pages. Search runs in your browser with [Pagefind](https://pagefind.app/).
 - Every change merged into the repository rebuilds the site automatically.
+- The project started as a copy of [Ripper1004/CyberPatriot-Toolkit](https://github.com/Ripper1004/CyberPatriot-Toolkit), and its original commits are kept in this repository's history.
+- Season dates, images and point values come from CyberPatriot's [published challenges and scoring values](https://www.uscyberpatriot.org/competition/current-competition/challenges-by-round).
 
 ## Changing something
 
