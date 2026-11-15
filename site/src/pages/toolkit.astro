@@ -1,4 +1,5 @@
 ---
+import { withBase } from '../data/url';
 // Toolkit dashboard: everything an experienced student needs during a round,
 // with no introductions.
 import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
@@ -42,10 +43,10 @@ const runCmds = [
 >
   <div class="tk cp-wide not-content">
     <p class="tk__lead">
-      Everything for a round, no introductions. New to this? <a href="/">Start with the Learn section</a>.
+      Everything for a round, no introductions. New to this? <a href={withBase("/")}>Start with the Learn section</a>.
     </p>
 
-    <a class="tk__continue" href="/" data-tk-continue hidden>
+    <a class="tk__continue" href={withBase("/")} data-tk-continue hidden>
       <span>Continue:</span> <strong data-tk-continue-title></strong> <span data-tk-continue-meta></span> →
     </a>
 
@@ -57,7 +58,7 @@ const runCmds = [
             <div>
               <p class="tk__flow-title">{f.title}</p>
               <p class="tk__flow-text">
-                {f.text} <a href={f.href}>{f.link} →</a>
+                {f.text} <a href={withBase(f.href)}>{f.link} →</a>
               </p>
             </div>
           </li>
@@ -73,7 +74,7 @@ const runCmds = [
       <div class="tk__lists">
         {
           lists.map((c) => (
-            <a class="tk__list" href={`/checklists/${c.id}/`} data-tk-page={c.page} data-total={c.total}>
+            <a class="tk__list" href={withBase(`/checklists/${c.id}/`)} data-tk-page={c.page} data-total={c.total}>
               <span class={`tk__dot tk__dot--${c.image}`} aria-hidden="true" />
               <span class="tk__list-name">{c.name}</span>
               <span class="tk__list-meta">
@@ -98,24 +99,24 @@ const runCmds = [
       <section aria-labelledby="tk-tools">
         <h2 id="tk-tools" class="tk__h">Tools</h2>
         <ul class="tk__links">
-          <li><a href="/tools/config-builder/">README config builder</a><span>paste README → config + commands</span></li>
-          <li><a href="/tools/round-timer/">Round timer</a><span>phases, full screen</span></li>
-          <li><a href="/tools/findings/">Findings to-do list</a><span>paste the script's report</span></li>
-          <li><a href="/tools/round-log/">Round log</a><span>changes + score, find penalties</span></li>
-          <li><a href="/tools/forensics/">Forensics helper</a><span>hashes, Base64, hex, ROT13</span></li>
-          <li><a href="/tools/commands/">Command finder</a><span>Linux / Windows / FreeBSD</span></li>
-          <li><a href="/downloads/">Download the scripts</a><span>wget / Invoke-WebRequest / fetch</span></li>
-          <li><a href="/progress/">My progress</a><span>export, import, reset</span></li>
+          <li><a href={withBase("/tools/config-builder/")}>README config builder</a><span>paste README → config + commands</span></li>
+          <li><a href={withBase("/tools/round-timer/")}>Round timer</a><span>phases, full screen</span></li>
+          <li><a href={withBase("/tools/findings/")}>Findings to-do list</a><span>paste the script's report</span></li>
+          <li><a href={withBase("/tools/round-log/")}>Round log</a><span>changes + score, find penalties</span></li>
+          <li><a href={withBase("/tools/forensics/")}>Forensics helper</a><span>hashes, Base64, hex, ROT13</span></li>
+          <li><a href={withBase("/tools/commands/")}>Command finder</a><span>Linux / Windows / FreeBSD</span></li>
+          <li><a href={withBase("/downloads/")}>Download the scripts</a><span>wget / Invoke-WebRequest / fetch</span></li>
+          <li><a href={withBase("/progress/")}>My progress</a><span>export, import, reset</span></li>
         </ul>
       </section>
       <section aria-labelledby="tk-ref">
         <h2 id="tk-ref" class="tk__h">Reference</h2>
         <ul class="tk__links">
-          <li><a href="/guides/forensics-questions/">Forensics questions</a><span>hashes, decoding, finding files, logs</span></li>
-          <li><a href="/guides/linux-service-hardening/">Linux service hardening</a><span>Apache, MySQL, FTP, Samba…</span></li>
-          <li><a href="/guides/cisco-networking/">Cisco & Packet Tracer</a><span>IOS commands, subnetting, ports</span></li>
-          <li><a href="/guides/things-that-lose-points/">Things that lose points</a><span>penalties to avoid</span></li>
-          <li><a href="/start-here/using-the-scripts/">Using the scripts</a><span>results, backups, undo</span></li>
+          <li><a href={withBase("/guides/forensics-questions/")}>Forensics questions</a><span>hashes, decoding, finding files, logs</span></li>
+          <li><a href={withBase("/guides/linux-service-hardening/")}>Linux service hardening</a><span>Apache, MySQL, FTP, Samba…</span></li>
+          <li><a href={withBase("/guides/cisco-networking/")}>Cisco & Packet Tracer</a><span>IOS commands, subnetting, ports</span></li>
+          <li><a href={withBase("/guides/things-that-lose-points/")}>Things that lose points</a><span>penalties to avoid</span></li>
+          <li><a href={withBase("/start-here/using-the-scripts/")}>Using the scripts</a><span>results, backups, undo</span></li>
         </ul>
       </section>
     </div>
@@ -138,7 +139,7 @@ const runCmds = [
       <p class="cp-hint">
         Swap <code>--audit</code> / <code>Audit</code> for <code>--apply</code> / <code>Apply</code> after reading the REVIEW
         lines. Works on: {SCRIPTS.map((s) => s.worksOn).join(' · ')}. Files and checksums:{' '}
-        <a href="/downloads/">Download the scripts</a>.
+        <a href={withBase("/downloads/")}>Download the scripts</a>.
       </p>
     </section>
   </div>

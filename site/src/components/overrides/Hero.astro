@@ -1,4 +1,5 @@
 ---
+import { withBase } from '../../data/url';
 // Custom hero for the home page (the only page with `hero` frontmatter).
 const PAGE_TITLE_ID = '_top'; // same id Starlight uses for page titles
 import Default from '@astrojs/starlight/components/Hero.astro';
@@ -23,10 +24,10 @@ const tagline = data.hero?.tagline;
     <h1 id={PAGE_TITLE_ID} class="cp-hero__title" set:html={title} />
     {tagline && <p class="cp-hero__tagline" set:html={tagline} />}
     <div class="cp-hero__actions">
-      <a class="cp-btn cp-btn--primary cp-btn--lg" href="/start-here/what-is-cyberpatriot/">
+      <a class="cp-btn cp-btn--primary cp-btn--lg" href={withBase("/start-here/what-is-cyberpatriot/")}>
         I'm new: start lesson 1 →
       </a>
-      <a class="cp-btn cp-btn--lg" href="/toolkit/">I've done this before: Toolkit →</a>
+      <a class="cp-btn cp-btn--lg" href={withBase("/toolkit/")}>I've done this before: Toolkit →</a>
     </div>
     <p class="cp-hero__note">No account, no GitHub. Your progress is saved in this browser.</p>
   </div>

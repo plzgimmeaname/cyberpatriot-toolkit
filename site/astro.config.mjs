@@ -6,6 +6,8 @@ import { CHECKLISTS, LEARNING_PATH, REPO_URL } from './src/data/catalog.mjs';
 import config from './site.config.mjs';
 
 const site = config.siteUrl;
+const base = config.base || undefined; // GitHub Pages project sites live under /<repository>/
+const BASE = (config.base || '').replace(/\/$/, '');
 const { accent } = config;
 
 /** @type {Record<string, { text: string; variant: 'note' | 'default' }>} */
@@ -20,13 +22,14 @@ const checklistBadges = {
 
 export default defineConfig({
   site,
+  ...(base ? { base } : {}),
   trailingSlash: 'always',
   integrations: [
     starlight({
       title: config.title,
       description: config.description,
       logo: { src: './src/assets/logo.svg', alt: '' },
-      favicon: '/favicon.svg',
+      favicon: '/favicon.svg', // Starlight adds the base path itself
       social: [{ icon: 'github', label: 'GitHub repository', href: REPO_URL }],
       editLink: { baseUrl: `${REPO_URL}/edit/main/site/` },
       customCss: [
@@ -119,7 +122,13 @@ export default defineConfig({
         },
       ],
       routeMiddleware: './src/routeData.ts',
-      plugins: [starlightLinksValidator({ errorOnLocalLinks: true, exclude: ['/', '/#checklists', '/toolkit/', '/files/**', '/tools/**', '/progress/', '/downloads/'] })],
+      // The hand-written pages below cannot be validated by the plugin, and every path carries the base prefix
+      plugins: [
+        starlightLinksValidator({
+          errorOnLocalLinks: true,
+          exclude: ['/', '/#checklists', '/toolkit/', '/files/**', '/tools/**', '/progress/', '/downloads/'].map((p) => `${BASE}${p}`),
+        }),
+      ],
     }),
   ],
 });

@@ -1,4 +1,5 @@
 ---
+import { withBase } from '../data/url';
 import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
 import UiIcon from '../components/UiIcon.astro';
 import type { UiIconName } from '../data/icons';
@@ -88,7 +89,7 @@ const rules = [
 >
   <div class="cp-home not-content">
     <!-- Continue where you left off (filled in by the script) -->
-    <a class="cp-continue" href="/" data-cp-continue hidden>
+    <a class="cp-continue" href={withBase("/")} data-cp-continue hidden>
       <span class="cp-continue__label">Continue where you left off</span>
       <span class="cp-continue__title" data-cp-continue-title></span>
       <span class="cp-continue__meta" data-cp-continue-meta></span>
@@ -112,7 +113,7 @@ const rules = [
         {
           lessons.map((l) => (
             <li>
-              <a class="cp-path__item" href={l.route} data-cp-path-item={l.id}>
+              <a class="cp-path__item" href={withBase(l.route)} data-cp-path-item={l.id}>
                 <span class="cp-path__n" aria-hidden="true">
                   <span class="cp-path__num">{l.n}</span>
                   <span class="cp-path__check">✓</span>
@@ -159,7 +160,7 @@ const rules = [
             return (
               <a
                 class={`cp-card cp-os cp-os--${c.image}`}
-                href={`/checklists/${c.id}/`}
+                href={withBase(`/checklists/${c.id}/`)}
                 data-cp-os={c.image}
                 data-rounds={rounds.map((r) => r.id).join(' ')}
                 data-cp-page={`checklists/${c.id}`}
@@ -211,7 +212,7 @@ const rules = [
                 {r.images.map((img) => {
                   const c = CHECKLISTS.find((x) => x.image === img);
                   return c ? (
-                    <a class={`cp-chip cp-chip--${img}`} href={`/checklists/${c.id}/`}>
+                    <a class={`cp-chip cp-chip--${img}`} href={withBase(`/checklists/${c.id}/`)}>
                       {IMAGE_NAMES[img]}
                     </a>
                   ) : null;
@@ -230,7 +231,7 @@ const rules = [
       <div class="cp-grid">
         {
           tools.map((t) => (
-            <a class="cp-card cp-tool" href={t.href}>
+            <a class="cp-card cp-tool" href={withBase(t.href)}>
               <span class="cp-tool__icon">
                 <UiIcon name={t.icon} />
               </span>
@@ -246,7 +247,7 @@ const rules = [
     <section class="cp-home__section" aria-labelledby="rules-title">
       <h2 id="rules-title" class="cp-section-title">The four golden rules</h2>
       <p class="cp-section-sub">
-        Most lost points come from breaking these. Read the full list in <a href="/guides/things-that-lose-points/"
+        Most lost points come from breaking these. Read the full list in <a href={withBase("/guides/things-that-lose-points/")}
           >Things that lose points</a
         >.
       </p>

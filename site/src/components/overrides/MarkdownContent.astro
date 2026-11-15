@@ -1,4 +1,5 @@
 ---
+import { withBase } from '../../data/url';
 // Wraps page content so the client script knows which page it is on, and
 // adds a "mark as read / next lesson" card to the end of each lesson.
 import Default from '@astrojs/starlight/components/MarkdownContent.astro';
@@ -31,11 +32,11 @@ const next = lesson ? lessons[lesson.n] : undefined;
             <span data-label-on hidden>✓ Read. Undo?</span>
           </button>
           {next ? (
-            <a class="cp-btn" href={next.route}>
+            <a class="cp-btn" href={withBase(next.route)}>
               Next: {next.label} →
             </a>
           ) : (
-            <a class="cp-btn" href="/#checklists">
+            <a class="cp-btn" href={withBase("/#checklists")}>
               Pick your checklist →
             </a>
           )}

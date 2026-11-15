@@ -1,4 +1,4 @@
-# Bastion: CyberPatriot Toolkit
+# Rampart: CyberPatriot Toolkit
 
 Beginner-friendly **checklists**, **guides** and **hardening scripts** for practicing CyberPatriot image challenges on Windows, Windows Server, Linux Mint, Debian, Ubuntu and FreeBSD.
 
@@ -52,7 +52,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\windows\Harden.ps1
 
 ## Website
 
-your deployed site (set its address in `site/site.config.mjs`): [`site/`](site/) turns everything above into a website for people who don't use GitHub. It's built with Astro + Starlight and hosted on Cloudflare Pages.
+your deployed site (set its address in `site/site.config.mjs`): [`site/`](site/) turns everything above into a website for people who don't use GitHub. It's built with Astro + Starlight and published to GitHub Pages by `.github/workflows/pages.yml`.
 
 - **Two sections:** **Toolkit** (dashboard, checklists, tools, scripts, reference: no introductions) for people who know the game, and **Learn** (welcome, 7 lessons, glossary) for beginners. Switch with the tabs at the top.
 - **Interactive checklists:** tick off steps, see your progress, jump to the next step, print, reset for a new image, and **Compact view** to hide the beginner explanations.
@@ -80,12 +80,13 @@ The pages are generated from `docs/` at build time, so **edit `docs/` and the we
 | Script | Tests |
 |---|---|
 | Linux | [`tests/linux/run-tests.sh`](tests/linux/run-tests.sh) builds a practice "image" in a **Debian 12, Ubuntu 22.04, Ubuntu 24.04 and Linux Mint 21.3** container, plants ~30 vulnerabilities (hidden root account, PAM backdoor, cron reverse shell, SUID `find`, fake sudo alias…), runs the script, and checks **76 results**, plus runs with no README list (nothing may be deleted) and under `umask 0000`, including real logins with `pamtester`. All pass. |
-| Windows | [`tests/windows/Test-HardenLogic.ps1`](tests/windows/Test-HardenLogic.ps1) loads the script's functions with fake `secedit.exe` and checks 82 behaviours. The script also parses cleanly and has no PSScriptAnalyzer findings or PowerShell 5.1 syntax problems. **It has not been run on a real Windows image yet.** Try **Audit** mode on a practice image first. |
+| Windows | [`tests/windows/Test-HardenLogic.ps1`](tests/windows/Test-HardenLogic.ps1) loads the script's functions with fake `secedit.exe` and checks 82 behaviours. The script also parses cleanly, has no PowerShell 5.1 syntax problems, and `Invoke-ScriptAnalyzer` reports nothing with [`tests/windows/PSScriptAnalyzerSettings.psd1`](tests/windows/PSScriptAnalyzerSettings.psd1) (that file turns off four style rules that do not suit a one-file interactive script, and says why for each). **It has not been run on a real Windows image yet.** Try **Audit** mode on a practice image first. |
 | FreeBSD | [`tests/freebsd/test-harden-logic.sh`](tests/freebsd/test-harden-logic.sh) runs the script's decisions on Linux under `dash` with fake FreeBSD commands (`pw`, `sysrc`, `service`...) and checks 52 behaviours, including "never deletes users without a README list". `shellcheck -s sh` clean. **Not yet run on a real FreeBSD system.** |
 
 ```bash
 bash tests/linux/run-tests.sh                 # needs Docker
 pwsh tests/windows/Test-HardenLogic.ps1       # needs PowerShell 7
+pwsh -c "Invoke-ScriptAnalyzer -Path scripts/windows/Harden.ps1 -Settings tests/windows/PSScriptAnalyzerSettings.psd1"   # needs the PSScriptAnalyzer module: Install-Module PSScriptAnalyzer -Scope CurrentUser
 dash tests/freebsd/test-harden-logic.sh       # as root; no FreeBSD needed
 ```
 
@@ -95,7 +96,7 @@ dash tests/freebsd/test-harden-logic.sh       # as root; no FreeBSD needed
 
 ```bash
 python3 tests/checklists/check-format.py                        # numbering, unique step ids, script tags
-bash tests/checklists/check-shell.sh                            # bash / sh syntax, <placeholders>
+bash tests/checklists/check-shell.sh                            # bash / sh syntax, <placeholders> (uses Docker for shellcheck if it isn't installed)
 pwsh -NoProfile -File tests/checklists/check-powershell.ps1     # PowerShell syntax
 python3 tests/checklists/linux_lab.py linux-mint                # needs Docker
 ```

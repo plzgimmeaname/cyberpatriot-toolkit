@@ -1,4 +1,5 @@
 ---
+import { withBase } from '../../data/url';
 // Networking quiz (Cisco part of a round) + endless subnetting practice.
 import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
 import { NET_QUESTIONS } from '../../data/networking-quiz';
@@ -16,7 +17,7 @@ const topics = [...new Set(NET_QUESTIONS.map((q) => q.topic))];
 >
   <div class="nq not-content" data-nq data-questions={JSON.stringify(NET_QUESTIONS)}>
     <p class="nq__intro">
-      Practice for the Cisco networking part of a round. Study first with the <a href="/guides/cisco-networking/"
+      Practice for the Cisco networking part of a round. Study first with the <a href={withBase("/guides/cisco-networking/")}
         >Cisco &amp; Packet Tracer guide</a
       >.
     </p>

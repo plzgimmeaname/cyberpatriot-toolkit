@@ -8,8 +8,11 @@ import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import config from '../site.config.mjs';
 
 const SITE = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+// Links carry the GitHub Pages sub-path (/<repository>/); it is not a folder inside dist/.
+const BASE = (config.base || '').replace(/\/$/, '');
 const DIST = join(SITE, 'dist');
 const errors = [];
 
@@ -28,7 +31,8 @@ function htmlFiles(dir) {
 
 /** URL path -> file in dist, or null. */
 function resolvePath(path) {
-  const clean = decodeURIComponent(path.split(/[?#]/)[0]);
+  let clean = decodeURIComponent(path.split(/[?#]/)[0]);
+  if (BASE && (clean === BASE || clean.startsWith(`${BASE}/`))) clean = clean.slice(BASE.length) || '/';
   const candidates = [join(DIST, clean), join(DIST, clean, 'index.html')];
   return candidates.find((p) => existsSync(p) && statSync(p).isFile()) ?? null;
 }
@@ -56,6 +60,12 @@ for (const file of pages) {
       continue;
     }
     if (!url.startsWith('/')) continue;
+    // Served from a sub-path (GitHub Pages): a link that forgot the prefix would 404 on the real site
+    // even though the file exists in dist/, so that is an error here too.
+    if (BASE && !url.startsWith(`${BASE}/`)) {
+      errors.push(`${page}: link ${url} is missing the ${BASE} prefix`);
+      continue;
+    }
     links++;
     const target = resolvePath(url);
     if (!target) {

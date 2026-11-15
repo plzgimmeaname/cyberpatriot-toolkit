@@ -9,7 +9,7 @@
 5. To make the site public and searchable: set `noindex: false`, delete the `X-Robots-Tag` line in `public/_headers` and replace `public/robots.txt`.
 6. Add or edit pages in `../docs/` (see below), then `npm run dev` to preview and `npm test` before you push.
 
-The CyberPatriot Toolkit website: [Astro](https://astro.build/) + [Starlight](https://starlight.astro.build/), hosted on **Cloudflare Pages**.
+The CyberPatriot Toolkit website: [Astro](https://astro.build/) + [Starlight](https://starlight.astro.build/), published to **GitHub Pages**.
 
 **The content is not in this folder.** At build time, `scripts/sync-docs.mjs` copies `../docs/**/*.md` and `../scripts/` into the site. To change a checklist or guide, edit the file in [`docs/`](../docs). Never edit `src/content/docs/checklists|guides|start-here`: those folders are generated and git-ignored.
 
@@ -33,43 +33,23 @@ After you change something in `docs/`, stop `npm run dev` and start it again so 
 | `npm run check` | TypeScript / Astro checks |
 | `npm test` | Build, then check every internal link, #anchor, checklist step and download checksum |
 
-## Put it on Cloudflare Pages (one time)
+## Put it on GitHub Pages (one time)
 
-1. Sign in to the [Cloudflare dashboard](https://dash.cloudflare.com/). A free account is enough.
-2. Go to **Workers & Pages → Create → Pages → Connect to Git**. Cloudflare sometimes moves these buttons; look for the option to create a **Pages** project from a Git repository.
-3. Allow Cloudflare to access GitHub and pick **`plzgimmeaname/cyberpatriot-toolkit`**. Private repositories work too.
-4. Use these build settings:
+1. Push the repository to GitHub.
+2. In the repository, open **Settings → Pages** and set **Source** to **GitHub Actions**. That is the only setting: `.github/workflows/pages.yml` builds the site and deploys it on every push to `main`.
+3. Your site is then at `https://<user>.github.io/<repository>/`, for example `https://plzgimmeaname.github.io/cyberpatriot-toolkit/`.
 
-   | Setting | Value |
-   |---|---|
-   | Production branch | `main` |
-   | Framework preset | `Astro` (or `None`) |
-   | Build command | `npm run build` |
-   | Build output directory | `dist` |
-   | Root directory (under *Advanced*) | `site` |
-   | Environment variable (optional) | `SITE_URL`, only if your address is not your site address (e.g. a custom domain) |
+A project site is served from `/<repository>/`, so the build is told that in **`base` in `site/site.config.mjs`** (`SITE_BASE` overrides it). Links inside the pages go through `withBase()` in `src/data/url.ts`, and links inside the docs are rewritten at build time, so nothing else has to know about the sub-path.
 
-5. Click **Save and Deploy**. The first build takes 1–2 minutes. Your site is then at `https://<project-name>.pages.dev`.
-
-
-
-From then on, every merge into `main` updates the site automatically, and every pull request gets its own preview link.
-
-The Node.js version comes from `site/.node-version`. If a build ever complains about Node, add an environment variable `NODE_VERSION` = `22`.
-
-### Optional: only let your class in
-
-The site tells search engines not to index it (`robots.txt` and `X-Robots-Tag`), but anyone with the link can open it. To require a login:
-
-1. In the Cloudflare dashboard, open **Zero Trust** (free for up to 50 users).
-2. Go to **Access → Applications → Add an application → Self-hosted**, and enter your site's address (e.g. `your-project.pages.dev`).
-3. Add a policy that **allows** your students' email addresses, or everyone with your school's email domain.
-
-Students then get a one-time code by email before the site opens.
+Set `siteUrl` in `site/site.config.mjs` (or the `SITE_URL` variable) to the address people will use: it feeds canonical links and the sitemap.
 
 ### Optional: a nicer address
 
-In the Pages project, use **Custom domains** to add a domain you own, e.g. `cyber.yourschool.org`. Then set the `SITE_URL` environment variable to that address and redeploy.
+**Settings → Pages → Custom domain**, then set `SITE_URL` to that address **and `base: ''`** in `site/site.config.mjs`, because a custom domain (or a `<user>.github.io` repository) serves the site from the root.
+
+### Optional: only let your class in
+
+GitHub Pages sites are public. The site already asks search engines not to index it (`robots.txt` and a `noindex` tag), but anyone with the link can open it. If you need a login, put a Cloudflare Access (Zero Trust) application in front of the site.
 
 ## How the site is organised
 

@@ -1,4 +1,5 @@
 ---
+import { withBase } from '../../data/url';
 import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
 ---
 
@@ -168,8 +169,8 @@ import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
           <h2 class="cb__h">Then run it</h2>
           <ol class="cb__run" data-cb-run></ol>
           <p class="cp-hint">
-            New to this? Read <a href="/start-here/using-the-scripts/">Using the scripts safely</a> first. Get the scripts
-            from the <a href="/downloads/">downloads page</a>.
+            New to this? Read <a href={withBase("/start-here/using-the-scripts/")}>Using the scripts safely</a> first. Get the scripts
+            from the <a href={withBase("/downloads/")}>downloads page</a>.
           </p>
         </div>
       </aside>

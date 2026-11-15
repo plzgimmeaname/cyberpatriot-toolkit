@@ -14,6 +14,7 @@ import { dirname, join, posix, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import GithubSlugger from 'github-slugger';
 import { BRANCH, CHECKLISTS, LEARNING_PATH, REPO_URL, SCRIPTS } from '../src/data/catalog.mjs';
+import config from '../site.config.mjs';
 
 const SITE = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const ROOT = resolve(SITE, '..');
@@ -22,6 +23,8 @@ const OUT_DOCS = join(SITE, 'src/content/docs');
 const OUT_DATA = join(SITE, 'src/data/generated');
 const OUT_DOWNLOADS = join(SITE, 'public/files');
 const SYNCED_DIRS = ['start-here', 'checklists', 'guides'];
+// GitHub Pages serves a project site from /<repository>/: site-absolute links need that prefix.
+const BASE = (config.base || '').replace(/\/$/, '');
 
 const ALERTS = {
   NOTE: { type: 'note', title: 'Note' },
@@ -81,14 +84,15 @@ function routeFor(docPath) {
 }
 
 function rewriteLink(target, fromDoc) {
-  if (/^([a-z]+:|#|\/)/i.test(target)) return target;
+  if (/^([a-z]+:|#)/i.test(target)) return target;
+  if (target.startsWith('/')) return BASE + target; // a page of this site
   const [pathPart, hash = ''] = target.split('#');
   const resolved = posix.normalize(posix.join(posix.dirname(`docs/${fromDoc}`), pathPart));
   const anchor = hash ? `#${hash}` : '';
   if (resolved.startsWith('docs/') && resolved.endsWith('.md')) {
     const docPath = resolved.slice('docs/'.length);
     if (!existsSync(join(DOCS, docPath))) fail(`${fromDoc}: broken link to ${target}`);
-    return routeFor(docPath) + anchor;
+    return BASE + routeFor(docPath) + anchor;
   }
   if (!existsSync(join(ROOT, resolved))) fail(`${fromDoc}: broken link to ${target}`);
   const kind = statSync(join(ROOT, resolved)).isDirectory() ? 'tree' : 'blob';
@@ -349,7 +353,7 @@ function main() {
       downloads.push({
         script: s.id,
         file,
-        url: `/files/${rel}`,
+        url: `${BASE}/files/${rel}`,
         name: rel.split('/').pop(),
         bytes: buf.length,
         lines: buf.toString('utf8').split('\n').length,

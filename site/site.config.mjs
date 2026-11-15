@@ -4,14 +4,22 @@
 
 export default {
   /** Name shown in the header, browser tab and search results. */
-  title: process.env.SITE_TITLE || 'Bastion',
+  title: process.env.SITE_TITLE || 'Rampart',
 
   /** One sentence for search engines and link previews. */
   description:
-    'Bastion: beginner-friendly CyberPatriot checklists, guides, tools and hardening scripts for Windows, Windows Server, Linux Mint, Debian, Ubuntu and FreeBSD.',
+    'Rampart: beginner-friendly CyberPatriot checklists, guides, tools and hardening scripts for Windows, Windows Server, Linux Mint, Debian, Ubuntu and FreeBSD.',
 
   /** Public address of the deployed site (canonical links, sitemap). */
-  siteUrl: process.env.SITE_URL || 'https://bastion.pages.dev',
+  siteUrl: process.env.SITE_URL || 'https://plzgimmeaname.github.io/cyberpatriot-toolkit',
+
+  /**
+   * Sub-path the site is served from. GitHub Pages serves a project site at /<repository>/.
+   * Use '' when the site sits at the root of a domain (a <user>.github.io repository, or a custom domain).
+   * If you change this, also edit the full links in src/content/docs/about.md and 404.md: Astro pages and
+   * docs links are prefixed automatically, but frontmatter and hand-written content cannot be, so they spell it out.
+   */
+  base: process.env.SITE_BASE ?? '/cyberpatriot-toolkit',
 
   /** GitHub "owner/name" of the repository that holds this site. Used for Edit links and downloads. */
   repo: process.env.SITE_REPO || 'plzgimmeaname/cyberpatriot-toolkit',

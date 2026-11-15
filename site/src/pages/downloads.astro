@@ -1,4 +1,5 @@
 ---
+import { withBase } from '../data/url';
 import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
 import { SCRIPTS } from '../data/site';
 import { REPO_URL } from '../data/catalog.mjs';
@@ -49,7 +50,7 @@ function getCommands(id: string) {
 >
   <div class="dl cp-wide not-content">
     <div class="cp-callout cp-callout--warn dl__warn">
-      <p><strong>Read <a href="/start-here/using-the-scripts/">Using the scripts safely</a> before you run anything.</strong></p>
+      <p><strong>Read <a href={withBase("/start-here/using-the-scripts/")}>Using the scripts safely</a> before you run anything.</strong></p>
       <p>
         Always run <strong>Audit</strong> mode first: it changes nothing.
       </p>
@@ -57,7 +58,7 @@ function getCommands(id: string) {
 
     <ol class="dl__how">
       <li><span>1</span><p><strong>Download</strong> on the VM with the commands below (or the buttons).</p></li>
-      <li><span>2</span><p><strong>Make a config</strong> with the <a href="/tools/config-builder/">README config builder</a> (optional).</p></li>
+      <li><span>2</span><p><strong>Make a config</strong> with the <a href={withBase("/tools/config-builder/")}>README config builder</a> (optional).</p></li>
       <li><span>3</span><p><strong>Audit</strong>, read the REVIEW lines, then <strong>Apply</strong>.</p></li>
     </ol>
 

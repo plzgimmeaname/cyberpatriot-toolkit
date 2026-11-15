@@ -1,4 +1,5 @@
 ---
+import { withBase } from '../data/url';
 // Shown under the title of every checklist: which rounds use this OS, the
 // matching script, and the progress card with its controls.
 import { checklistById, checklistSteps, roundsFor, SCRIPTS } from '../data/site';
@@ -39,7 +40,7 @@ const tools = checklistTools(checklist?.family ?? 'linux');
   }
   {
     script && (
-      <a class="cp-cl-meta__item cp-cl-meta__link" href={`/downloads/#${script.id}`}>
+      <a class="cp-cl-meta__item cp-cl-meta__link" href={withBase(`/downloads/#${script.id}`)}>
         <span class="cp-cl-meta__label">Script</span>
         <code>{script.file.split('/').slice(1).join('/')}</code>
       </a>
@@ -49,7 +50,7 @@ const tools = checklistTools(checklist?.family ?? 'linux');
     <span class="cp-cl-meta__label">Tools</span>
     <span class="cp-cl-meta__tools">
       {tools.map((t) => (
-        <a href={t.href}>{t.label}</a>
+        <a href={withBase(t.href)}>{t.label}</a>
       ))}
     </span>
   </span>

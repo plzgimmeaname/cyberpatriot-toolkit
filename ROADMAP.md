@@ -14,7 +14,7 @@ The toolkit is **feature complete** for class use. What's left is mostly testing
 | Linux script | Done. Tested on Debian 12, Ubuntu 22.04, Ubuntu 24.04 and Linux Mint 21.3. |
 | Windows script | Done. Logic-tested only: **never run on a real Windows image.** |
 | FreeBSD script | Done. Logic-tested only: **never run on a real FreeBSD system.** |
-| Website | Astro + Starlight, deployable to Cloudflare Pages or any static host. Optional Cloudflare Access login; script downloads under `/files/` should stay open so images can fetch them from a terminal. Rebrand through `site/site.config.mjs`. |
+| Website | Astro + Starlight, published to GitHub Pages by `.github/workflows/pages.yml`. Script downloads under `/files/` stay open so images can fetch them from a terminal (a project site is served from `/<repository>/`). Rebrand through `site/site.config.mjs`. |
 
 ---
 
@@ -71,7 +71,7 @@ The old scripts (still in the git history) broke images: they disabled Active Di
 | Script | How it's tested |
 |---|---|
 | Linux | `tests/linux/run-tests.sh` plants ~30 problems in Debian 12, Ubuntu 22.04, Ubuntu 24.04 and Mint 21.3 containers, runs the script and checks 76 results. It also checks that audit mode changes nothing, that nothing is deleted without a README list, `umask 0000`, and real logins with `pamtester`. |
-| Windows | `tests/windows/Test-HardenLogic.ps1`: 82 logic tests with a fake `secedit`. Parses cleanly, no PSScriptAnalyzer findings, PowerShell 5.1 compatible. |
+| Windows | `tests/windows/Test-HardenLogic.ps1`: 82 logic tests with a fake `secedit`. Parses cleanly, no PSScriptAnalyzer findings with `tests/windows/PSScriptAnalyzerSettings.psd1`, PowerShell 5.1 compatible. |
 | FreeBSD | `tests/freebsd/test-harden-logic.sh`: 52 tests under `dash` with fake FreeBSD commands. `shellcheck -s sh` clean. |
 
 ---
@@ -99,7 +99,7 @@ Sections follow the order points are usually won: read the README, forensics que
 
 ## 5. Website
 
-Astro + Starlight in [`site/`](site/), built and hosted by Cloudflare Pages on every merge into `main` (each pull request gets a preview link). `docs/` is the single source: `site/scripts/sync-docs.mjs` turns it into pages at build time, so **edit `docs/` and the site updates itself**. Setup: [`site/README.md`](site/README.md).
+Astro + Starlight in [`site/`](site/), built and published to GitHub Pages by `.github/workflows/pages.yml` on every push to `main`, and checked by `site.yml` on every pull request. `docs/` is the single source: `site/scripts/sync-docs.mjs` turns it into pages at build time, so **edit `docs/` and the site updates itself**. Setup: [`site/README.md`](site/README.md).
 
 - **Toolkit** section for experienced students (dashboard, checklists, tools, downloads, reference) and **Learn** section for beginners (7 lessons, glossary, quiz, mentor guide).
 - Interactive checklists: progress, next step, hide finished, compact view, print, reset, **Tick the script's ✅ steps**, and your README names filled into commands.

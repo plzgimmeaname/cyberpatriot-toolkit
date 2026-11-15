@@ -1,4 +1,5 @@
 ---
+import { withBase } from '../../data/url';
 import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
 
 // The phases from docs/start-here/round-game-plan.md, in minutes of a 4-hour round.
@@ -120,7 +121,7 @@ const phases = [
               <span class="rt__phase-time" data-rt-time />
               <div>
                 <p class="rt__phase-title">
-                  <a href={p.link}>{p.title}</a>
+                  <a href={withBase(p.link)}>{p.title}</a>
                 </p>
                 <p class="rt__phase-text">{p.text}</p>
               </div>

@@ -1,4 +1,5 @@
 ---
+import { withBase } from '../../data/url';
 // Forensics helper: hash a file, identify a file type, and decode text
 // (Base64, hex, URL, ROT13, binary, Caesar). Everything runs in the browser.
 import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
@@ -15,7 +16,7 @@ import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
   <div class="fx cp-wide not-content" data-fx>
     <p class="fx__intro">
       Quick answers for common forensics questions. Nothing leaves your computer. For the command-line way, see the{' '}
-      <a href="/guides/forensics-questions/">forensics questions guide</a>.
+      <a href={withBase("/guides/forensics-questions/")}>forensics questions guide</a>.
     </p>
 
     <div class="cp-segmented" role="group" aria-label="Tool" data-fx-tabs>
