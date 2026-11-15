@@ -48,7 +48,7 @@ export const CHECKLISTS = [
     name: 'Debian',
     short: 'Debian',
     family: 'linux',
-    blurb: 'The Debian differences: no sudo by default, GNOME, root account.',
+    blurb: 'Same depth as the Mint checklist, written for Debian: no sudo by default, GNOME, sources.list, firefox-esr.',
     script: 'linux',
   },
   {

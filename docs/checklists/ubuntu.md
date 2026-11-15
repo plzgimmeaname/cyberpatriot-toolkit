@@ -62,7 +62,7 @@ Same commands as Mint section 4. There's no graphical firewall tool by default; 
 AutomaticLoginEnable=false
 TimedLoginEnable=false
 ```
-The script also hides the list of users on the login screen, in `/etc/gdm3/greeter.dconf-defaults`, the same way as [Debian step 8.3](debian.md#83-hide-the-list-of-users-on-the-login-screen).
+The script also hides the list of users on the login screen, in `/etc/gdm3/greeter.dconf-defaults`, the same way as [Debian step 8.2](debian.md#82-hide-the-list-of-users-on-the-login-screen).
 
 ### Screen lock: GNOME settings
 - [ ] Done

@@ -13,14 +13,14 @@ Beginner-friendly **checklists**, **guides** and **hardening scripts** for pract
 ### Checklists (one per operating system)
 Every item says **what** to do, **why** it matters, how to do it by **clicking** and by **typing**, and how to **check it worked**.
 
-| OS | CyberPatriot 19 (2026-27) rounds | Checklist |
-|---|---|---|
-| Windows 11 / 10 | Round 1, Round 2 | [docs/checklists/windows-10-11.md](docs/checklists/windows-10-11.md) |
-| Windows Server 2022 / 2019 / 2016 | Round 2, State, Semifinals | [docs/checklists/windows-server.md](docs/checklists/windows-server.md) |
-| Linux Mint 21 | Round 1, State, Semifinals | [docs/checklists/linux-mint.md](docs/checklists/linux-mint.md) |
-| Debian 12 | Round 2, State, Semifinals | [docs/checklists/debian.md](docs/checklists/debian.md) |
-| FreeBSD | Semifinals (some tiers) | [docs/checklists/freebsd.md](docs/checklists/freebsd.md) |
-| Ubuntu | older practice images | [docs/checklists/ubuntu.md](docs/checklists/ubuntu.md) |
+| OS | CyberPatriot 19 (2026-27) rounds | Steps | Checklist |
+|---|---|---|---|
+| Windows 11 / 10 | Round 1, Round 2 | 65 | [docs/checklists/windows-10-11.md](docs/checklists/windows-10-11.md) |
+| Windows Server 2022 / 2019 / 2016 | Round 2, State, Semifinals | 45 | [docs/checklists/windows-server.md](docs/checklists/windows-server.md) |
+| Linux Mint 21 | Round 1, Round 2, State, Semifinals | 70 | [docs/checklists/linux-mint.md](docs/checklists/linux-mint.md) |
+| Ubuntu 24 | State (22 in the training rounds) | 10 | [docs/checklists/ubuntu.md](docs/checklists/ubuntu.md) |
+| Debian 12 | not in CP-19 — older images, full-depth walkthrough | 78 | [docs/checklists/debian.md](docs/checklists/debian.md) |
+| FreeBSD | not in CP-19 (Semifinals on older seasons) | 34 | [docs/checklists/freebsd.md](docs/checklists/freebsd.md) |
 
 ### Beginner guides
 - [What is CyberPatriot?](docs/start-here/what-is-cyberpatriot.md) · [Reading the README](docs/start-here/reading-the-readme.md) · [Round game plan](docs/start-here/round-game-plan.md)
