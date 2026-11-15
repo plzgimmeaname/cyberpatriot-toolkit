@@ -8,6 +8,7 @@
 // It also writes data files used by the site (checklist steps, glossary,
 // script downloads). docs/ stays the single source of truth: edit there.
 
+import { execSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, posix, relative, resolve } from 'node:path';
@@ -264,6 +265,35 @@ function frontmatter(fields) {
   return lines.join('\n');
 }
 
+/**
+ * Changelog and contributors, straight from git. A shallow clone (CI defaults to
+ * one commit) simply produces a shorter list; it must never fail the build.
+ */
+function gitHistory() {
+  try {
+    const raw = execSync('git log --no-merges --date=short --pretty=format:%H%x1f%ad%x1f%an%x1f%s -n 500', {
+      cwd: ROOT,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const commits = raw
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => {
+        const [hash, date, author, subject] = line.split('\x1f');
+        return { hash, date, author, subject };
+      });
+    const counts = new Map();
+    for (const c of commits) counts.set(c.author, (counts.get(c.author) || 0) + 1);
+    const contributors = [...counts]
+      .map(([name, n]) => ({ name, commits: n }))
+      .sort((a, b) => b.commits - a.commits);
+    return { commits, contributors, complete: commits.length < 500, generatedAt: new Date().toISOString() };
+  } catch {
+    return { commits: [], contributors: [], complete: false, generatedAt: new Date().toISOString() };
+  }
+}
+
 /** Parse the first Markdown table in glossary.md into [{ term, meaning }]. */
 function parseGlossary(source) {
   const rows = source.split('\n').filter((l) => /^\|.*\|\s*$/.test(l));
@@ -366,10 +396,12 @@ function main() {
   writeFileSync(join(OUT_DATA, 'checklists.json'), `${JSON.stringify(checklists, null, 2)}\n`);
   writeFileSync(join(OUT_DATA, 'glossary.json'), `${JSON.stringify(glossary, null, 2)}\n`);
   writeFileSync(join(OUT_DATA, 'downloads.json'), `${JSON.stringify(downloads, null, 2)}\n`);
+  const history = gitHistory();
+  writeFileSync(join(OUT_DATA, 'history.json'), `${JSON.stringify(history, null, 2)}\n`);
 
   const stepCount = Object.values(checklists).reduce((n, c) => n + c.steps.length, 0);
   console.log(
-    `sync-docs: ${Object.keys(pages).length} pages, ${Object.keys(checklists).length} with steps (${stepCount} steps), ${glossary.length} glossary terms, ${downloads.length} downloads`,
+    `sync-docs: ${Object.keys(pages).length} pages, ${Object.keys(checklists).length} with steps (${stepCount} steps), ${glossary.length} glossary terms, ${downloads.length} downloads, ${history.commits.length} commits`,
   );
 }
 

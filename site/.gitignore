@@ -9,3 +9,11 @@ src/content/docs/checklists/
 src/content/docs/guides/
 src/data/generated/
 public/files/
+
+# rendered by scripts/make-brand.mjs at every build (icons, social cards, manifest,
+# service worker, ⌘K palette) — regenerate with `npm run sync`
+public/og/
+public/manifest.webmanifest
+public/sw.js
+public/palette.js
+public/palette.css

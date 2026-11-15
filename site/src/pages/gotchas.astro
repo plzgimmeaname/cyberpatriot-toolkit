@@ -1,0 +1,202 @@
+---
+import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
+import { withBase } from '../data/url';
+import { GOTCHAS, IMAGE_ORDER } from '../data/gotchas';
+import { CHECKLISTS, checklistSteps, IMAGE_NAMES } from '../data/site';
+
+const KIND = {
+  trap: { label: 'Costs points', icon: '⛔' },
+  warn: { label: 'Wastes time', icon: '⚠️' },
+  note: { label: 'Worth knowing', icon: '💡' },
+} as const;
+
+const GROUPS = IMAGE_ORDER.map((image) => {
+  const items = GOTCHAS.filter((g) => g.image === image);
+  const checklist = CHECKLISTS.find((c) => c.image === image);
+  const data = checklist ? checklistSteps[`checklists/${checklist.id}`] : undefined;
+  return {
+    image,
+    name: IMAGE_NAMES[image] ?? image,
+    checklist: data ? { name: checklist?.name ?? '', route: data.route, steps: data.steps.length } : undefined,
+    id: checklist?.id,
+    items: [...items].sort((a, b) => ['trap', 'warn', 'note'].indexOf(a.kind) - ['trap', 'warn', 'note'].indexOf(b.kind)),
+    traps: items.filter((g) => g.kind === 'trap').length,
+  };
+}).filter((g) => g.items.length > 0);
+
+const total = GOTCHAS.length;
+---
+
+<StarlightPage
+  frontmatter={{
+    title: 'Gotchas by image',
+    description: 'The specific traps on each CyberPatriot image: what costs points, what wastes time, and what to know before you start.',
+    editUrl: false,
+    tableOfContents: false,
+  }}
+>
+  <div class="gg not-content">
+    <p class="gg__intro">
+      {total} things that are true on one image and not on the others. This is the list we wish someone had handed us before
+      the first round: each entry comes from working the image on a practice VM, not from a competition answer key.
+    </p>
+
+    <nav class="gg__jump" aria-label="Jump to an image">
+      {
+        GROUPS.map((g) => (
+          <a href={`#img-${g.image}`}>
+            {g.name}
+            <span>{g.traps ? `${g.traps} trap${g.traps === 1 ? '' : 's'}` : 'no traps'}</span>
+          </a>
+        ))
+      }
+    </nav>
+
+    {
+      GROUPS.map((g) => (
+        <section class="gg__group" id={`img-${g.image}`} aria-labelledby={`img-${g.image}-h`}>
+          <header class="gg__head">
+            <h2 id={`img-${g.image}-h`}>{g.name}</h2>
+            <p>
+              {g.items.length} entries ·{' '}
+              {g.checklist ? (
+                <a href={withBase(g.checklist.route)}>{g.checklist.steps}-step checklist</a>
+              ) : (
+                'no checklist yet'
+              )}
+              {g.id && (
+                <>
+                  {' · '}
+                  <a href={withBase(`/field-cards/${g.id}/`)}>field card</a>
+                </>
+              )}
+            </p>
+          </header>
+          <ul class="gg__list">
+            {g.items.map((item) => (
+              <li class={`gg__item gg__item--${item.kind}`}>
+                <p class="gg__title">
+                  <span class="gg__badge" aria-hidden="true">
+                    {KIND[item.kind].icon}
+                  </span>
+                  {item.title}
+                  <span class="gg__kind">{KIND[item.kind].label}</span>
+                </p>
+                <p class="gg__detail">{item.detail}</p>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ))
+    }
+
+    <p class="gg__foot">
+      Found one that is wrong or missing? It is a documentation fix, not a secret: open an issue with the image, the version
+      and what you saw.
+    </p>
+  </div>
+</StarlightPage>
+
+<style>
+  .gg {
+    display: grid;
+    gap: 1.3rem;
+  }
+  .gg__intro {
+    max-width: 52rem;
+    margin: 0;
+    color: var(--sl-color-gray-2);
+  }
+  .gg__jump {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
+  .gg__jump a {
+    display: grid;
+    padding: 0.35rem 0.7rem;
+    border: 1px solid var(--cp-border);
+    border-radius: var(--cp-radius-sm);
+    background: var(--cp-card);
+    color: var(--sl-color-gray-1);
+    font-size: var(--sl-text-sm);
+    font-weight: 600;
+    text-decoration: none;
+  }
+  .gg__jump a span {
+    color: var(--sl-color-gray-4);
+    font-size: 0.68rem;
+    font-weight: 400;
+  }
+  .gg__jump a:hover {
+    border-color: var(--sl-color-accent);
+  }
+  .gg__group {
+    scroll-margin-top: 5rem;
+  }
+  .gg__head h2 {
+    margin: 0;
+    color: var(--sl-color-white);
+    font-size: var(--sl-text-xl);
+  }
+  .gg__head p {
+    margin: 0.1rem 0 0.6rem;
+    color: var(--sl-color-gray-3);
+    font-size: var(--sl-text-xs);
+  }
+  .gg__list {
+    display: grid;
+    gap: 0.5rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .gg__item {
+    padding: 0.65rem 0.85rem;
+    border: 1px solid var(--cp-border);
+    border-left: 3px solid var(--sl-color-gray-4);
+    border-radius: var(--cp-radius-sm);
+    background: var(--cp-card);
+  }
+  .gg__item--trap {
+    border-left-color: var(--cp-danger);
+  }
+  .gg__item--warn {
+    border-left-color: var(--cp-warn, #ffc15e);
+  }
+  .gg__item--note {
+    border-left-color: var(--sl-color-accent);
+  }
+  .gg__title {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    align-items: baseline;
+    margin: 0 0 0.2rem;
+    color: var(--sl-color-white);
+    font-size: var(--sl-text-sm);
+    font-weight: 700;
+  }
+  .gg__badge {
+    font-size: 0.85rem;
+  }
+  .gg__kind {
+    margin-left: auto;
+    color: var(--sl-color-gray-4);
+    font-size: 0.65rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  .gg__detail {
+    margin: 0;
+    color: var(--sl-color-gray-2);
+    font-size: var(--sl-text-sm);
+    line-height: 1.5;
+  }
+  .gg__foot {
+    margin: 0;
+    color: var(--sl-color-gray-3);
+    font-size: var(--sl-text-xs);
+  }
+</style>

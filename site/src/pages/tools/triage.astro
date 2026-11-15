@@ -1,0 +1,219 @@
+---
+import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
+import { withBase } from '../../data/url';
+import { FIRST_MOVES, TRIAGE_AREAS } from '../../data/triage';
+---
+
+<StarlightPage
+  frontmatter={{
+    title: 'Score dropped: triage',
+    description: 'The score went down. Pick what you touched and see the likely cause, the command that confirms it, and how to put it back.',
+    editUrl: false,
+    tableOfContents: false,
+  }}
+>
+  <div class="tr not-content">
+    <p class="tr__intro">
+      A drop is almost always reversible, and almost always caused by the last thing you changed. Work down this page in
+      order: first the five moves, then the area you touched.
+    </p>
+
+    <section class="tr__first" aria-labelledby="tr-first">
+      <h2 id="tr-first">First five moves</h2>
+      <ol>
+        {FIRST_MOVES.map((m) => <li>{m}</li>)}
+      </ol>
+      <p class="tr__links">
+        <a href={withBase('/tools/round-log/')}>Open the round log</a> ·
+        <a href={withBase('/guides/things-that-lose-points/')}>Things that cost points</a> ·
+        <a href={withBase('/tools/findings/')}>Script findings to-do list</a>
+      </p>
+    </section>
+
+    <nav class="tr__jump" aria-label="Jump to an area">
+      {
+        TRIAGE_AREAS.map((a) => (
+          <a href={`#tr-${a.id}`}>
+            {a.label}
+            <span>{a.causes.length} causes</span>
+          </a>
+        ))
+      }
+    </nav>
+
+    {
+      TRIAGE_AREAS.map((a) => (
+        <section class="tr__area" id={`tr-${a.id}`} aria-labelledby={`tr-${a.id}-h`}>
+          <header>
+            <h2 id={`tr-${a.id}-h`}>{a.label}</h2>
+            <p>{a.blurb}</p>
+          </header>
+          <ol class="tr__causes">
+            {a.causes.map((c, i) => (
+              <li>
+                <p class="tr__cause">
+                  <span class="tr__n">{i + 1}</span>
+                  {c.cause}
+                </p>
+                <dl class="tr__kv">
+                  <div>
+                    <dt>Check</dt>
+                    <dd><code>{c.check}</code></dd>
+                  </div>
+                  <div>
+                    <dt>Put it back</dt>
+                    <dd>{c.fix}</dd>
+                  </div>
+                </dl>
+              </li>
+            ))}
+          </ol>
+        </section>
+      ))
+    }
+
+    <p class="tr__foot">
+      None of this replaces the snapshot. If you cannot explain a change well enough to undo it by hand, restoring the
+      snapshot and starting from the last good score is the faster round.
+    </p>
+  </div>
+</StarlightPage>
+
+<style>
+  .tr {
+    display: grid;
+    gap: 1.25rem;
+  }
+  .tr__intro {
+    max-width: 52rem;
+    margin: 0;
+    color: var(--sl-color-gray-2);
+  }
+  .tr__first {
+    padding: 0.9rem 1.1rem;
+    border: 1px solid var(--cp-border);
+    border-left: 3px solid var(--cp-danger);
+    border-radius: var(--cp-radius-sm);
+    background: var(--cp-card);
+  }
+  .tr__first h2 {
+    margin: 0 0 0.4rem;
+    color: var(--sl-color-white);
+    font-size: var(--sl-text-lg);
+  }
+  .tr__first ol {
+    display: grid;
+    gap: 0.25rem;
+    margin: 0;
+    padding-left: 1.2rem;
+    color: var(--sl-color-gray-2);
+    font-size: var(--sl-text-sm);
+  }
+  .tr__links {
+    margin: 0.6rem 0 0;
+    color: var(--sl-color-gray-3);
+    font-size: var(--sl-text-xs);
+  }
+  .tr__jump {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
+  .tr__jump a {
+    display: grid;
+    padding: 0.35rem 0.7rem;
+    border: 1px solid var(--cp-border);
+    border-radius: var(--cp-radius-sm);
+    background: var(--cp-card);
+    color: var(--sl-color-gray-1);
+    font-size: var(--sl-text-sm);
+    font-weight: 600;
+    text-decoration: none;
+  }
+  .tr__jump a span {
+    color: var(--sl-color-gray-4);
+    font-size: 0.68rem;
+    font-weight: 400;
+  }
+  .tr__jump a:hover {
+    border-color: var(--sl-color-accent);
+  }
+  .tr__area {
+    scroll-margin-top: 5rem;
+  }
+  .tr__area header h2 {
+    margin: 0;
+    color: var(--sl-color-white);
+    font-size: var(--sl-text-xl);
+  }
+  .tr__area header p {
+    margin: 0.1rem 0 0.6rem;
+    color: var(--sl-color-gray-3);
+    font-size: var(--sl-text-sm);
+  }
+  .tr__causes {
+    display: grid;
+    gap: 0.5rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .tr__causes > li {
+    padding: 0.65rem 0.85rem;
+    border: 1px solid var(--cp-border);
+    border-radius: var(--cp-radius-sm);
+    background: var(--cp-card);
+  }
+  .tr__cause {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.5rem;
+    margin: 0 0 0.35rem;
+    color: var(--sl-color-white);
+    font-size: var(--sl-text-sm);
+    font-weight: 600;
+  }
+  .tr__n {
+    display: grid;
+    place-items: center;
+    width: 1.3rem;
+    height: 1.3rem;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--sl-color-accent) 22%, transparent);
+    color: var(--sl-color-accent-high);
+    font-size: 0.72rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .tr__kv {
+    display: grid;
+    gap: 0.3rem;
+    margin: 0;
+    padding-left: 1.8rem;
+  }
+  .tr__kv > div {
+    display: grid;
+    grid-template-columns: 4.5rem 1fr;
+    gap: 0.5rem;
+  }
+  .tr__kv dt {
+    color: var(--sl-color-gray-4);
+    font-size: 0.68rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  .tr__kv dd {
+    margin: 0;
+    color: var(--sl-color-gray-2);
+    font-size: var(--sl-text-sm);
+  }
+  .tr__kv code {
+    color: var(--sl-color-accent-high);
+    font-size: 0.78rem;
+    overflow-wrap: anywhere;
+  }
+  .tr__foot {
+    margin: 0;
+    color: var(--sl-color-gray-3);
+    font-size: var(--sl-text-xs);
+  }
+</style>

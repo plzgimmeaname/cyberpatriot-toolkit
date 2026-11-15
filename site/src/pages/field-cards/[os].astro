@@ -1,0 +1,196 @@
+---
+import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
+import { withBase } from '../../data/url';
+import { FIELD_CARDS } from '../../data/field-cards';
+import { checklistSteps, roundsFor } from '../../data/site';
+
+export function getStaticPaths() {
+  return FIELD_CARDS.map((card) => ({ params: { os: card.id }, props: { card } }));
+}
+
+const { card } = Astro.props;
+const data = checklistSteps[`checklists/${card.id}`];
+const imageId = card.id === 'windows-10-11' ? 'windows' : card.id === 'windows-server' ? 'server' : card.id;
+const rounds = roundsFor(imageId);
+const lines = card.groups.reduce((n, g) => n + g.lines.length, 0);
+---
+
+<StarlightPage
+  frontmatter={{
+    title: `Field card — ${card.name}`,
+    description: `${lines} commands for ${card.name}, on one printable page.`,
+    editUrl: false,
+    tableOfContents: false,
+  }}
+>
+  <div class="fc not-content">
+    <div class="fc__bar">
+      <p class="fc__bar-text">
+        <strong>{card.name}</strong> · {card.shell} · {lines} commands ·{' '}
+        {rounds.length ? rounds.map((r) => r.name).join(' / ') : 'not in CP-19'}
+      </p>
+      <div class="fc__actions">
+        <button type="button" class="cp-btn cp-btn--sm cp-btn--primary" data-fc-print>Print this card</button>
+        {data && <a class="cp-btn cp-btn--sm" href={withBase(data.route)}>Full checklist ({data.steps.length} steps)</a>}
+      </div>
+    </div>
+
+    <p class="fc__intro">{card.intro}</p>
+
+    <div class="fc__grid">
+      {
+        card.groups.map((g) => (
+          <section class="fc__group">
+            <h2>{g.title}</h2>
+            <ul>
+              {g.lines.map((l) => (
+                <li>
+                  <span class="fc__do">{l.do}</span>
+                  {l.cmd && <code class="fc__cmd">{l.cmd}</code>}
+                  {l.note && <span class="fc__note">{l.note}</span>}
+                </li>
+              ))}
+            </ul>
+          </section>
+        ))
+      }
+    </div>
+
+    <p class="fc__foot">
+      Commands only. If a line surprises you, read the matching step in the checklist before typing it; several of them can
+      cost points if the image expects the opposite. Take a snapshot first.
+    </p>
+  </div>
+</StarlightPage>
+
+<script>
+  document.querySelector('[data-fc-print]')?.addEventListener('click', () => window.print());
+</script>
+
+<style>
+  .fc {
+    display: grid;
+    gap: 0.9rem;
+  }
+  .fc__bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .fc__bar-text {
+    margin: 0;
+    color: var(--sl-color-gray-2);
+    font-size: var(--sl-text-sm);
+  }
+  .fc__bar-text strong {
+    color: var(--sl-color-white);
+  }
+  .fc__actions {
+    display: flex;
+    gap: 0.4rem;
+  }
+  .fc__intro {
+    max-width: 52rem;
+    margin: 0;
+    padding: 0.7rem 0.9rem;
+    border-left: 3px solid var(--sl-color-accent);
+    background: color-mix(in srgb, var(--sl-color-accent) 8%, transparent);
+    color: var(--sl-color-gray-1);
+    font-size: var(--sl-text-sm);
+  }
+  .fc__grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(20rem, 1fr));
+    gap: 0.75rem 1rem;
+    align-items: start;
+  }
+  .fc__group {
+    padding: 0.55rem 0.8rem 0.7rem;
+    border: 1px solid var(--cp-border);
+    border-radius: var(--cp-radius-sm);
+    background: var(--cp-card);
+    break-inside: avoid;
+  }
+  .fc__group h2 {
+    margin: 0 0 0.35rem;
+    color: var(--sl-color-accent-high);
+    font-family: var(--cp-font-mono, ui-monospace, monospace);
+    font-size: 0.74rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .fc__group ul {
+    display: grid;
+    gap: 0.45rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .fc__group li {
+    display: grid;
+    gap: 0.15rem;
+  }
+  .fc__do {
+    color: var(--sl-color-white);
+    font-size: var(--sl-text-sm);
+    font-weight: 600;
+    line-height: 1.25;
+  }
+  .fc__cmd {
+    display: block;
+    padding: 0.28rem 0.45rem;
+    border: 1px solid var(--cp-border);
+    border-radius: 0.35rem;
+    background: rgba(0, 0, 0, 0.28);
+    color: var(--sl-color-accent-high);
+    font-family: var(--cp-font-mono, ui-monospace, monospace);
+    font-size: 0.72rem;
+    line-height: 1.35;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    user-select: all;
+  }
+  .fc__note {
+    color: var(--cp-warn, #ffc15e);
+    font-size: 0.72rem;
+    line-height: 1.3;
+  }
+  .fc__foot {
+    margin: 0;
+    color: var(--sl-color-gray-3);
+    font-size: var(--sl-text-xs);
+  }
+
+  @media print {
+    .fc__actions,
+    .fc__intro {
+      display: none;
+    }
+    .fc {
+      color: #000;
+    }
+    .fc__group {
+      border-color: #bbb;
+      background: #fff;
+      padding: 0.3rem 0.5rem;
+    }
+    .fc__group h2,
+    .fc__do {
+      color: #000;
+    }
+    .fc__cmd {
+      border-color: #ccc;
+      background: #f4f4f4;
+      color: #000;
+      font-size: 8.5pt;
+    }
+    .fc__note {
+      color: #7a4a00;
+    }
+    .fc__grid {
+      grid-template-columns: 1fr 1fr;
+    }
+  }
+</style>

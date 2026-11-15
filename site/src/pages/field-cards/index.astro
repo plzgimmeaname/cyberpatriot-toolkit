@@ -1,0 +1,118 @@
+---
+import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
+import { withBase } from '../../data/url';
+import { FIELD_CARDS } from '../../data/field-cards';
+import { checklistById, checklistSteps, roundsFor } from '../../data/site';
+
+const cards = FIELD_CARDS.map((c) => {
+  const data = checklistSteps[`checklists/${c.id}`];
+  const lines = c.groups.reduce((n, g) => n + g.lines.length, 0);
+  const image = checklistById(c.id)?.image ?? c.id;
+  return { ...c, lines, steps: data?.steps.length ?? 0, route: data?.route ?? '/', rounds: roundsFor(image) };
+});
+---
+
+<StarlightPage
+  frontmatter={{
+    title: 'Field cards',
+    description: 'One printed page per image: the commands that decide the round, with no explanations in the way.',
+    editUrl: false,
+    tableOfContents: false,
+  }}
+>
+  <div class="fc-index not-content">
+    <p class="fc-index__intro">
+      A field card is the checklist boiled down to what you type. One page per image, printed or on a second screen, for the
+      middle of a round when reading a full explanation is the wrong use of four hours. The reasoning behind each line is in
+      the matching checklist.
+    </p>
+
+    <div class="fc-index__grid">
+      {
+        cards.map((c) => (
+          <a class="fc-index__card" href={withBase(`/field-cards/${c.id}/`)}>
+            <span class="fc-index__name">{c.name}</span>
+            <span class="fc-index__meta">
+              {c.lines} commands · {c.shell}
+            </span>
+            <span class="fc-index__meta">
+              {c.steps} checklist steps{c.rounds.length ? ` · ${c.rounds.map((r) => r.name).join(', ')}` : ' · not in CP-19'}
+            </span>
+            <span class="fc-index__go">Open the card →</span>
+          </a>
+        ))
+      }
+    </div>
+
+    <aside class="fc-index__note">
+      <p>
+        <strong>Printing:</strong> each card has a Print button and is laid out for A4/Letter in two columns. Browser "Save as
+        PDF" gives you a file you can put on a phone or a USB stick; the cards work with no internet.
+      </p>
+      <p>
+        <strong>Why not just the checklist?</strong> The card is a memory aid, not a replacement: it lists the command, not
+        the reason, and it deliberately leaves out the steps that need judgement. When something looks unusual, go back to
+        the checklist.
+      </p>
+    </aside>
+  </div>
+</StarlightPage>
+
+<style>
+  .fc-index {
+    display: grid;
+    gap: 1.4rem;
+  }
+  .fc-index__intro {
+    max-width: 50rem;
+    margin: 0;
+    color: var(--sl-color-gray-2);
+  }
+  .fc-index__grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+    gap: 0.8rem;
+  }
+  .fc-index :global(.fc-index__card) {
+    display: grid;
+    gap: 0.25rem;
+    padding: 1rem 1.1rem;
+    border: 1px solid var(--cp-border);
+    border-radius: var(--cp-radius);
+    background: var(--cp-card);
+    text-decoration: none;
+    transition: border-color 0.15s ease, transform 0.15s ease;
+  }
+  .fc-index :global(.fc-index__card:hover) {
+    border-color: var(--sl-color-accent);
+    transform: translateY(-1px);
+  }
+  .fc-index :global(.fc-index__name) {
+    color: var(--sl-color-white);
+    font-weight: 700;
+    font-size: var(--sl-text-lg);
+  }
+  .fc-index :global(.fc-index__meta) {
+    color: var(--sl-color-gray-3);
+    font-size: var(--sl-text-xs);
+  }
+  .fc-index :global(.fc-index__go) {
+    margin-top: 0.35rem;
+    color: var(--sl-color-accent-high);
+    font-size: var(--sl-text-sm);
+    font-weight: 600;
+  }
+  .fc-index__note {
+    display: grid;
+    gap: 0.6rem;
+    padding: 0.9rem 1.1rem;
+    border: 1px solid var(--cp-border);
+    border-radius: var(--cp-radius);
+    background: var(--cp-card);
+    color: var(--sl-color-gray-2);
+    font-size: var(--sl-text-sm);
+  }
+  .fc-index__note p {
+    margin: 0;
+  }
+</style>

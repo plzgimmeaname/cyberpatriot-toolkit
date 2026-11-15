@@ -1,0 +1,311 @@
+---
+import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
+import { withBase } from '../data/url';
+import { CHECKLISTS, checklistSteps, SCRIPTS } from '../data/site';
+
+const TAG = {
+  auto: { icon: '✅', label: 'Done by the script', blurb: 'The script makes the change itself. Check the diff it prints.' },
+  review: { icon: '🔎', label: 'Checked, you decide', blurb: 'The script reports what it found. It will not delete a user or stop a service for you.' },
+  manual: { icon: '✋', label: 'By hand', blurb: 'Needs a person: a password, a judgement call, or a forensics answer.' },
+} as const;
+
+const ROWS = CHECKLISTS.map((c) => {
+  const data = checklistSteps[`checklists/${c.id}`];
+  const steps = data?.steps ?? [];
+  const bucket = {
+    auto: steps.filter((s) => s.script === 'auto'),
+    review: steps.filter((s) => s.script === 'review'),
+    manual: steps.filter((s) => s.script === 'manual'),
+  };
+  return {
+    id: c.id,
+    name: c.name,
+    route: data?.route ?? `/checklists/${c.id}/`,
+    total: steps.length,
+    bucket,
+    script: SCRIPTS.find((s) => s.id === c.script),
+    pct: steps.length ? Math.round((bucket.auto.length / steps.length) * 100) : 0,
+  };
+});
+
+const totals = ROWS.reduce(
+  (t, r) => ({ auto: t.auto + r.bucket.auto.length, review: t.review + r.bucket.review.length, manual: t.manual + r.bucket.manual.length, all: t.all + r.total }),
+  { auto: 0, review: 0, manual: 0, all: 0 },
+);
+---
+
+<StarlightPage
+  frontmatter={{
+    title: 'What the scripts actually do',
+    description: 'An honest breakdown: which checklist steps the hardening scripts apply, which they only check, and which no script can do.',
+    editUrl: false,
+    tableOfContents: false,
+  }}
+>
+  <div class="au not-content">
+    <p class="au__intro">
+      Every step in every checklist carries a tag from the script's own dry run: <strong>✅ applied</strong>,
+      <strong>🔎 checked</strong> or <strong>✋ by hand</strong>. This page counts them. It is generated from the checklists, so a
+      tag cannot be changed in one place and claimed in another.
+    </p>
+
+    <div class="au__summary">
+      <div class="au__stat">
+        <span class="au__stat-icon" aria-hidden="true">✅</span>
+        <strong>{totals.auto}</strong>
+        <span>applied by the scripts</span>
+      </div>
+      <div class="au__stat">
+        <span class="au__stat-icon" aria-hidden="true">🔎</span>
+        <strong>{totals.review}</strong>
+        <span>reported, you decide</span>
+      </div>
+      <div class="au__stat">
+        <span class="au__stat-icon" aria-hidden="true">✋</span>
+        <strong>{totals.manual}</strong>
+        <span>only a person can do</span>
+      </div>
+      <div class="au__stat au__stat--pct">
+        <strong>{totals.all ? Math.round((totals.auto / totals.all) * 100) : 0}%</strong>
+        <span>of {totals.all} steps are automatic</span>
+      </div>
+    </div>
+
+    <div class="au__legend">
+      {
+        (['auto', 'review', 'manual'] as const).map((k) => (
+          <p>
+            <span aria-hidden="true">{TAG[k].icon}</span> <strong>{TAG[k].label}</strong> — {TAG[k].blurb}
+          </p>
+        ))
+      }
+    </div>
+
+    <div class="au__cards">
+      {
+        ROWS.map((r) => (
+          <section class="au__card" aria-labelledby={`au-${r.id}`}>
+            <header class="au__head">
+              <h2 id={`au-${r.id}`}>
+                <a href={withBase(r.route)}>{r.name}</a>
+              </h2>
+              <p class="au__meta">
+                {r.total} steps · {r.pct}% automatic
+                {r.script && <span> · {r.script.file.split('/').pop()}</span>}
+              </p>
+              <div class="cp-bar au__bar" role="img" aria-label={`${r.pct}% of steps automatic`}>
+                <span class="cp-bar__fill" style={`width:${r.pct}%`} />
+              </div>
+            </header>
+
+            {(['auto', 'review', 'manual'] as const).map((k) => (
+              <details class="au__group" open={k === 'auto'}>
+                <summary>
+                  <span aria-hidden="true">{TAG[k].icon}</span>
+                  <span class="au__group-label">{TAG[k].label}</span>
+                  <span class="au__count">{r.bucket[k].length}</span>
+                </summary>
+                {r.bucket[k].length ? (
+                  <ul class="au__list">
+                    {r.bucket[k].map((s) => (
+                      <li>
+                        <a href={withBase(`${r.route}#${s.id}`)}>{s.title}</a>
+                        <span class="au__section">{s.section}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p class="au__empty">Nothing in this category.</p>
+                )}
+              </details>
+            ))}
+          </section>
+        ))
+      }
+    </div>
+
+    <section class="au__limits" aria-labelledby="au-limits">
+      <h2 id="au-limits">What no script can do</h2>
+      <ul>
+        <li><strong>Read the README.</strong> Every image has its own rules about which accounts and services must stay.</li>
+        <li><strong>Answer a forensics question.</strong> The answer is in the image; a script cannot find it for you.</li>
+        <li><strong>Delete an account or a file.</strong> Deciding that is safe needs the README and the forensics answers.</li>
+        <li><strong>Choose a password.</strong> Scripts can enforce a policy; they cannot invent a password the graders accept.</li>
+        <li><strong>Know which service is required.</strong> The review mode lists what is running; choosing is the job.</li>
+        <li><strong>Undo a mistake.</strong> Only your snapshot does that. Take one first, every time.</li>
+      </ul>
+      <p class="au__limits-foot">
+        The scripts are a head start, not a score. Every step they tag 🔎 or ✋ is a decision still on the table, and the
+        checklist says what to look for.
+      </p>
+    </section>
+  </div>
+</StarlightPage>
+
+<style>
+  .au {
+    display: grid;
+    gap: 1.4rem;
+  }
+  .au__intro {
+    max-width: 52rem;
+    margin: 0;
+    color: var(--sl-color-gray-2);
+  }
+  .au__summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+    gap: 1px;
+    border: 1px solid var(--cp-border);
+    border-radius: var(--cp-radius);
+    background: var(--cp-border);
+    overflow: hidden;
+  }
+  .au__stat {
+    display: grid;
+    gap: 0.1rem;
+    padding: 0.85rem 1rem;
+    background: var(--cp-card);
+  }
+  .au__stat-icon {
+    font-size: 1rem;
+  }
+  .au__stat strong {
+    color: var(--sl-color-white);
+    font-size: 1.7rem;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+  }
+  .au__stat span:last-child {
+    color: var(--sl-color-gray-3);
+    font-size: var(--sl-text-xs);
+  }
+  .au__stat--pct {
+    background: color-mix(in srgb, var(--sl-color-accent) 10%, var(--cp-card));
+  }
+  .au__legend {
+    display: grid;
+    gap: 0.35rem;
+    padding: 0.85rem 1rem;
+    border: 1px solid var(--cp-border);
+    border-radius: var(--cp-radius-sm);
+    background: var(--cp-card);
+    color: var(--sl-color-gray-2);
+    font-size: var(--sl-text-sm);
+  }
+  .au__legend p {
+    margin: 0;
+  }
+  .au__cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(21rem, 1fr));
+    gap: 0.9rem;
+    align-items: start;
+  }
+  .au__card {
+    padding: 0.8rem 0.9rem;
+    border: 1px solid var(--cp-border);
+    border-radius: var(--cp-radius);
+    background: var(--cp-card);
+  }
+  .au__head h2 {
+    margin: 0;
+    font-size: var(--sl-text-lg);
+  }
+  .au__head h2 a {
+    color: var(--sl-color-white);
+    text-decoration: none;
+  }
+  .au__head h2 a:hover {
+    text-decoration: underline;
+  }
+  .au__meta {
+    margin: 0.15rem 0 0.45rem;
+    color: var(--sl-color-gray-3);
+    font-size: var(--sl-text-xs);
+  }
+  .au__bar {
+    height: 5px;
+    margin-bottom: 0.5rem;
+  }
+  .au__group {
+    border-top: 1px solid var(--cp-border);
+    padding: 0.35rem 0;
+  }
+  .au__group summary {
+    display: flex;
+    gap: 0.45rem;
+    align-items: baseline;
+    cursor: pointer;
+    color: var(--sl-color-gray-1);
+    font-size: var(--sl-text-sm);
+    font-weight: 600;
+    list-style: none;
+  }
+  .au__group summary::-webkit-details-marker {
+    display: none;
+  }
+  .au__group-label {
+    flex: 1;
+  }
+  .au__count {
+    color: var(--sl-color-gray-3);
+    font-variant-numeric: tabular-nums;
+  }
+  .au__list {
+    display: grid;
+    gap: 0.15rem;
+    margin: 0.4rem 0 0;
+    padding: 0;
+    list-style: none;
+    font-size: var(--sl-text-sm);
+  }
+  .au__list li {
+    display: grid;
+    gap: 0.05rem;
+    padding: 0.18rem 0;
+    border-top: 1px dashed var(--cp-border);
+  }
+  .au__list a {
+    color: var(--sl-color-gray-1);
+    text-decoration: none;
+  }
+  .au__list a:hover {
+    color: var(--sl-color-accent-high);
+    text-decoration: underline;
+  }
+  .au__section {
+    color: var(--sl-color-gray-4);
+    font-size: 0.68rem;
+  }
+  .au__empty {
+    margin: 0.35rem 0 0;
+    color: var(--sl-color-gray-4);
+    font-size: var(--sl-text-xs);
+  }
+  .au__limits {
+    padding: 0.9rem 1.1rem;
+    border: 1px solid var(--cp-border);
+    border-left: 3px solid var(--cp-danger);
+    border-radius: var(--cp-radius-sm);
+    background: var(--cp-card);
+  }
+  .au__limits h2 {
+    margin: 0 0 0.5rem;
+    color: var(--sl-color-white);
+    font-size: var(--sl-text-lg);
+  }
+  .au__limits ul {
+    display: grid;
+    gap: 0.3rem;
+    margin: 0;
+    padding-left: 1.1rem;
+    color: var(--sl-color-gray-2);
+    font-size: var(--sl-text-sm);
+  }
+  .au__limits-foot {
+    margin: 0.6rem 0 0;
+    color: var(--sl-color-gray-3);
+    font-size: var(--sl-text-xs);
+  }
+</style>

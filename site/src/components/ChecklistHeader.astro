@@ -4,6 +4,7 @@ import { withBase } from '../data/url';
 // matching script, and the progress card with its controls.
 import { checklistById, checklistSteps, roundsFor, SCRIPTS } from '../data/site';
 import { checklistTools } from '../data/related';
+import { verifiedFor } from '../data/verified';
 
 interface Props {
   id: string;
@@ -19,6 +20,7 @@ const checklist = checklistById(id);
 const rounds = checklist ? roundsFor(checklist.image) : [];
 const script = SCRIPTS.find((s) => s.id === checklist?.script);
 const tools = checklistTools(checklist?.family ?? 'linux');
+const verified = verifiedFor(checklist?.family ?? 'linux');
 ---
 
 <div class="cp-cl-meta not-content" data-pagefind-ignore>
@@ -55,6 +57,17 @@ const tools = checklistTools(checklist?.family ?? 'linux');
     </span>
   </span>
 </div>
+
+<div class="cp-cl-actions not-content" data-pagefind-ignore>
+  <a class="cp-btn cp-btn--sm" href={withBase(`/field-cards/${id}/`)}>Print the field card</a>
+  <a class="cp-btn cp-btn--sm" href={withBase(`/gotchas/#img-${checklist?.image ?? 'linux'}`)}>Gotchas for this image</a>
+  <a class="cp-btn cp-btn--sm cp-btn--ghost" href={withBase('/points-map/')}>Where the points are</a>
+</div>
+<p class={`cp-verified cp-verified--${verified.level} not-content`} data-pagefind-ignore>
+  <span class="cp-verified__dot" aria-hidden="true"></span>
+  <span>{verified.line}</span>
+  <a href={withBase('/automation/')}>What the scripts do →</a>
+</p>
 
 <section class="cp-progress not-content" data-cp-progress data-page={page} data-total={total} aria-label="Checklist progress" data-pagefind-ignore>
   <div class="cp-progress__top">
@@ -111,6 +124,57 @@ const tools = checklistTools(checklist?.family ?? 'linux');
     Your browser is blocking storage, so ticks won't be remembered after you leave this page.
   </p>
 </section>
+
+<style>
+  .cp-cl-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin: 0.6rem 0 0.4rem;
+  }
+  .cp-verified {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    align-items: baseline;
+    margin: 0 0 1rem;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid var(--cp-border);
+    border-left: 3px solid var(--sl-color-gray-4);
+    border-radius: var(--cp-radius-sm);
+    background: var(--cp-card);
+    color: var(--sl-color-gray-2);
+    font-size: var(--sl-text-xs);
+  }
+  .cp-verified--tested {
+    border-left-color: var(--cp-success);
+  }
+  .cp-verified--partial {
+    border-left-color: var(--cp-warn, #ffc15e);
+  }
+  .cp-verified--untested {
+    border-left-color: var(--cp-danger);
+  }
+  .cp-verified__dot {
+    width: 0.45rem;
+    height: 0.45rem;
+    border-radius: 50%;
+    background: var(--sl-color-gray-4);
+  }
+  .cp-verified--tested .cp-verified__dot {
+    background: var(--cp-success);
+  }
+  .cp-verified--partial .cp-verified__dot {
+    background: var(--cp-warn, #ffc15e);
+  }
+  .cp-verified--untested .cp-verified__dot {
+    background: var(--cp-danger);
+  }
+  .cp-verified a {
+    margin-left: auto;
+    color: var(--sl-color-accent-high);
+  }
+</style>
 
 <div class="cp-topbar" aria-hidden="true" data-cp-topbar>
   <span class="cp-topbar__fill"></span>

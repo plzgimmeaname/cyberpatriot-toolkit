@@ -117,7 +117,20 @@ const lists = CHECKLISTS.map((c) => {
           Import a progress file
           <input type="file" accept="application/json,.json" class="cp-visually-hidden" data-pg-import />
         </label>
+        <button type="button" class="cp-btn" data-pg-share>Copy a share link</button>
         <button type="button" class="cp-btn cp-btn--danger" data-pg-reset>Reset everything</button>
+      </div>
+      <div class="pg__share" data-pg-share-box hidden>
+        <label class="cp-label" for="pg-share-url">Link that carries your progress (open it on the other device, or paste it to a teammate)</label>
+        <input id="pg-share-url" class="cp-input" type="text" readonly data-pg-share-url />
+        <p class="pg__share-note">Everything is inside the link itself. Nothing is uploaded, and the link stops working when you clear your progress.</p>
+      </div>
+      <div class="cp-callout cp-callout--warn pg__incoming" data-pg-incoming hidden>
+        <p><strong>This link carries progress from another device.</strong> Import it to replace the matching ticks here?</p>
+        <div class="pg__incoming-actions">
+          <button type="button" class="cp-btn cp-btn--sm cp-btn--primary" data-pg-accept>Import it</button>
+          <button type="button" class="cp-btn cp-btn--sm cp-btn--ghost" data-pg-dismiss>Ignore</button>
+        </div>
       </div>
       <p class="pg__msg" role="status" data-pg-msg></p>
     </section>
@@ -225,6 +238,56 @@ const lists = CHECKLISTS.map((c) => {
   root.addEventListener('click', (e) => {
     const b = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-pg-reset-list]');
     if (b && confirm('Clear the ticks on this checklist?')) resetSteps(b.dataset.pgResetList as string);
+  });
+
+  // ---- Share a link that carries the progress (no server, no account) -------
+  const b64encode = (text: string): string => {
+    let bin = '';
+    for (const b of new TextEncoder().encode(text)) bin += String.fromCharCode(b);
+    return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  };
+  const b64decode = (text: string): string => {
+    const bin = atob(text.replace(/-/g, '+').replace(/_/g, '/'));
+    return new TextDecoder().decode(Uint8Array.from(bin, (c) => c.charCodeAt(0)));
+  };
+
+  $('[data-pg-share]').addEventListener('click', async () => {
+    const data = exportAll();
+    delete data.last;
+    const url = `${location.origin}${location.pathname}#p=${b64encode(JSON.stringify(data))}`;
+    const input = $<HTMLInputElement>('[data-pg-share-url]');
+    input.value = url;
+    $('[data-pg-share-box]').hidden = false;
+    try {
+      await navigator.clipboard.writeText(url);
+      msg('Share link copied. It carries your ticks, not your name.');
+    } catch {
+      input.select();
+      msg('Copy the link below.');
+    }
+  });
+
+  const incoming = (() => {
+    const m = location.hash.match(/[#&]p=([^&]+)/);
+    if (!m) return null;
+    try {
+      const parsed = JSON.parse(b64decode(m[1]));
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+    } catch {
+      return null;
+    }
+  })();
+  if (incoming) $('[data-pg-incoming]').hidden = false;
+  $('[data-pg-accept]').addEventListener('click', () => {
+    if (!incoming) return;
+    const n = importAll(incoming);
+    history.replaceState(null, '', location.pathname);
+    $('[data-pg-incoming]').hidden = true;
+    msg(`Imported ${n} item${n === 1 ? '' : 's'} from the link.`);
+  });
+  $('[data-pg-dismiss]').addEventListener('click', () => {
+    history.replaceState(null, '', location.pathname);
+    $('[data-pg-incoming]').hidden = true;
   });
 
   if (!storageAvailable()) $('[data-pg-nostorage]').hidden = false;
@@ -455,5 +518,35 @@ const lists = CHECKLISTS.map((c) => {
     margin: 0.75rem 0 0;
     color: var(--cp-success);
     font-size: var(--sl-text-sm);
+  }
+  .pg__share {
+    display: grid;
+    gap: 0.3rem;
+    max-width: 42rem;
+    margin-top: 1rem;
+  }
+  .pg__share input {
+    font-family: var(--cp-font-mono, ui-monospace, monospace);
+    font-size: 0.75rem;
+  }
+  .pg__share-note {
+    margin: 0;
+    color: var(--sl-color-gray-3);
+    font-size: var(--sl-text-xs);
+  }
+  .pg__incoming {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1rem;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 1rem;
+  }
+  .pg__incoming p {
+    margin: 0;
+  }
+  .pg__incoming-actions {
+    display: flex;
+    gap: 0.4rem;
   }
 </style>

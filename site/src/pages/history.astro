@@ -1,0 +1,264 @@
+---
+import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
+import { REPO_URL } from '../data/catalog.mjs';
+import { withBase } from '../data/url';
+import { VERIFIED_ON } from '../data/verified';
+import history from '../data/generated/history.json';
+
+interface Commit {
+  hash: string;
+  date: string;
+  author: string;
+  subject: string;
+}
+
+const commits = (history.commits as Commit[]) ?? [];
+const contributors = (history.contributors as { name: string; commits: number }[]) ?? [];
+const maxCommits = Math.max(1, ...contributors.map((c) => c.commits));
+
+const months: { key: string; label: string; commits: Commit[] }[] = [];
+for (const c of commits) {
+  const key = c.date.slice(0, 7);
+  const last = months.at(-1);
+  if (last && last.key === key) last.commits.push(c);
+  else months.push({ key, label: new Date(`${key}-01T00:00:00Z`).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' }), commits: [c] });
+}
+
+const range = commits.length ? `${commits.at(-1)?.date} → ${commits[0].date}` : 'no history available';
+const lastVerified = new Date(`${VERIFIED_ON}T00:00:00Z`).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+---
+
+<StarlightPage
+  frontmatter={{
+    title: 'Changelog & contributors',
+    description: 'Every change to the toolkit, generated from the git history, and who made them.',
+    editUrl: false,
+    tableOfContents: false,
+  }}
+>
+  <div class="hs not-content">
+    <p class="hs__intro">
+      This page is built from <code>git log</code> at every deploy, so it cannot go stale. The checklists are dated too:
+      everything on the site was last verified on <strong>{lastVerified}</strong>.
+    </p>
+
+    <div class="hs__stats">
+      <div><strong>{commits.length}</strong><span>changes shown</span></div>
+      <div><strong>{contributors.length}</strong><span>contributors</span></div>
+      <div><strong>{range}</strong><span>date range</span></div>
+    </div>
+
+    {
+      !history.complete && (
+        <p class="cp-callout cp-callout--warn hs__shallow">
+          This copy of the site was built from a shallow clone, so older changes are not in the list. The full history is in
+          the <a href={`${REPO_URL}/commits/main`}>repository</a>.
+        </p>
+      )
+    }
+
+    <section aria-labelledby="hs-people">
+      <h2 id="hs-people" class="hs__h">Who built it</h2>
+      <ul class="hs__people">
+        {
+          contributors.map((c) => (
+            <li>
+              <span class="hs__avatar" aria-hidden="true">{c.name.slice(0, 2).toUpperCase()}</span>
+              <span class="hs__who">{c.name}</span>
+              <span class="hs__bar" aria-hidden="true">
+                <span style={`width:${Math.round((c.commits / maxCommits) * 100)}%`} />
+              </span>
+              <span class="hs__n">{c.commits}</span>
+            </li>
+          ))
+        }
+      </ul>
+      <p class="hs__credit">
+        The original CyberPatriot-Toolkit was written by <a href="https://github.com/Ripper1004">Ripper1004</a>; this fork
+        keeps that credit in the footer of the README and on the <a href={withBase('/about/')}>about page</a>.
+      </p>
+    </section>
+
+    <section aria-labelledby="hs-log">
+      <h2 id="hs-log" class="hs__h">Changes</h2>
+      {
+        months.length ? (
+          months.map((m) => (
+            <div class="hs__month">
+              <h3>{m.label}</h3>
+              <ul class="hs__commits">
+                {m.commits.map((c) => (
+                  <li>
+                    <a href={`${REPO_URL}/commit/${c.hash}`} title={c.hash}>
+                      {c.subject}
+                    </a>
+                    <span class="hs__date">{c.date}</span>
+                    <span class="hs__author">{c.author.split(' ')[0]}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))
+        ) : (
+          <p class="hs__empty">No git history was available when this page was built.</p>
+        )
+      }
+    </section>
+  </div>
+</StarlightPage>
+
+<style>
+  .hs {
+    display: grid;
+    gap: 1.4rem;
+  }
+  .hs__intro {
+    max-width: 52rem;
+    margin: 0;
+    color: var(--sl-color-gray-2);
+  }
+  .hs__stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+    gap: 1px;
+    border: 1px solid var(--cp-border);
+    border-radius: var(--cp-radius);
+    background: var(--cp-border);
+    overflow: hidden;
+  }
+  .hs__stats > div {
+    display: grid;
+    gap: 0.1rem;
+    padding: 0.8rem 1rem;
+    background: var(--cp-card);
+  }
+  .hs__stats strong {
+    color: var(--sl-color-white);
+    font-size: 1.25rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .hs__stats span {
+    color: var(--sl-color-gray-3);
+    font-size: var(--sl-text-xs);
+  }
+  .hs__h {
+    margin: 0 0 0.6rem;
+    color: var(--sl-color-white);
+    font-size: var(--sl-text-xl);
+  }
+  .hs__people {
+    display: grid;
+    gap: 0.35rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .hs__people li {
+    display: grid;
+    grid-template-columns: 2rem minmax(6rem, 12rem) 1fr 3rem;
+    gap: 0.6rem;
+    align-items: center;
+    padding: 0.35rem 0.6rem;
+    border: 1px solid var(--cp-border);
+    border-radius: var(--cp-radius-sm);
+    background: var(--cp-card);
+  }
+  .hs__avatar {
+    display: grid;
+    place-items: center;
+    width: 1.6rem;
+    height: 1.6rem;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--sl-color-accent) 25%, transparent);
+    color: var(--sl-color-accent-high);
+    font-size: 0.62rem;
+    font-weight: 700;
+  }
+  .hs__who {
+    color: var(--sl-color-gray-1);
+    font-size: var(--sl-text-sm);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .hs__bar {
+    height: 6px;
+    border-radius: 999px;
+    background: var(--sl-color-gray-6);
+    overflow: hidden;
+  }
+  .hs__bar span {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--sl-color-accent);
+  }
+  .hs__n {
+    color: var(--sl-color-gray-2);
+    font-size: var(--sl-text-xs);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+  }
+  .hs__credit,
+  .hs__empty {
+    margin: 0.7rem 0 0;
+    color: var(--sl-color-gray-3);
+    font-size: var(--sl-text-xs);
+  }
+  .hs__month {
+    margin-bottom: 1rem;
+  }
+  .hs__month h3 {
+    margin: 0 0 0.35rem;
+    color: var(--sl-color-accent-high);
+    font-family: var(--cp-font-mono, ui-monospace, monospace);
+    font-size: 0.72rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .hs__commits {
+    display: grid;
+    gap: 1px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    border: 1px solid var(--cp-border);
+    border-radius: var(--cp-radius-sm);
+    background: var(--cp-border);
+    overflow: hidden;
+  }
+  .hs__commits li {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 6rem 6rem;
+    gap: 0.6rem;
+    padding: 0.4rem 0.7rem;
+    background: var(--cp-card);
+    font-size: var(--sl-text-sm);
+  }
+  @media (max-width: 40rem) {
+    .hs__commits li {
+      grid-template-columns: 1fr auto;
+    }
+    .hs__author {
+      display: none;
+    }
+  }
+  .hs__commits a {
+    color: var(--sl-color-gray-1);
+    text-decoration: none;
+    overflow-wrap: anywhere;
+  }
+  .hs__commits a:hover {
+    color: var(--sl-color-accent-high);
+    text-decoration: underline;
+  }
+  .hs__date,
+  .hs__author {
+    color: var(--sl-color-gray-4);
+    font-size: var(--sl-text-xs);
+    font-variant-numeric: tabular-nums;
+  }
+  .hs__shallow {
+    margin: 0;
+  }
+</style>

@@ -4,7 +4,18 @@ export const BRANCH: string;
 export const SEASON: {
   name: string;
   years: string;
-  rounds: { id: string; name: string; dates: string; images: string[] }[];
+  rounds: {
+    id: string;
+    name: string;
+    dates: string;
+    images: string[];
+    /** Official CP-19 points per image id, and the non-image parts of the round. */
+    imagePoints?: Record<string, number>;
+    cisco?: number;
+    web?: number;
+    total?: number;
+    note?: string;
+  }[];
 };
 export const CHECKLISTS: {
   id: string;

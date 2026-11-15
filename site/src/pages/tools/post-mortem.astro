@@ -1,0 +1,356 @@
+---
+import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
+import { CATEGORIES } from '../../data/coverage';
+import { CHECKLISTS, SEASON } from '../../data/site';
+
+const rounds = SEASON.rounds.map((r) => ({ id: r.id, name: r.name }));
+const images = CHECKLISTS.map((c) => ({ id: c.id, name: c.name }));
+const areas = CATEGORIES.filter((c) => c.id !== 'prep').map((c) => ({ id: c.id, label: c.label }));
+---
+
+<StarlightPage
+  frontmatter={{
+    title: 'Round post-mortem',
+    description: 'After the round: what we missed, why, and what we will change. Exports as Markdown you can keep for the rest of the season.',
+    editUrl: false,
+    tableOfContents: false,
+  }}
+>
+  <div class="pom cp-wide not-content" data-pom>
+    <p class="pom__intro">
+      Fill this in <strong>within an hour of the round</strong>, while you still remember why you did things. It saves in this
+      browser, and exports as Markdown for your team notes. The point is the third column: what changes next round.
+    </p>
+
+    <div class="pom__top">
+      <label class="pom__field">
+        <span class="cp-label">Round</span>
+        <select class="cp-input" data-pom-round>
+          {rounds.map((r) => <option value={r.name}>{r.name}</option>)}
+        </select>
+      </label>
+      <label class="pom__field">
+        <span class="cp-label">Image</span>
+        <select class="cp-input" data-pom-image>
+          {images.map((i) => <option value={i.name}>{i.name}</option>)}
+        </select>
+      </label>
+      <label class="pom__field pom__field--score">
+        <span class="cp-label">Score</span>
+        <input class="cp-input" type="number" inputmode="numeric" placeholder="e.g. 78" data-pom-score />
+      </label>
+      <label class="pom__field pom__field--score">
+        <span class="cp-label">Out of</span>
+        <input class="cp-input" type="number" inputmode="numeric" placeholder="100" data-pom-out />
+      </label>
+    </div>
+
+    <div class="pom__grid">
+      <section class="pom__block">
+        <h2>What we missed</h2>
+        <p class="pom__hint">One row per miss. The area matters more than the wording: it is what you will revise.</p>
+        <div data-pom-misses></div>
+        <button type="button" class="cp-btn cp-btn--sm" data-pom-add>Add a miss</button>
+      </section>
+
+      <section class="pom__block">
+        <h2>What went well</h2>
+        <label class="pom__area">
+          <span class="cp-label">Keep doing this</span>
+          <textarea class="cp-input" rows="4" data-pom-good placeholder="e.g. snapshot first, forensics answered by minute 25"></textarea>
+        </label>
+        <label class="pom__area">
+          <span class="cp-label">What cost us the most time</span>
+          <textarea class="cp-input" rows="3" data-pom-time placeholder="e.g. 40 minutes on a service that was not scored"></textarea>
+        </label>
+      </section>
+    </div>
+
+    <section class="pom__block">
+      <h2>What changes next round</h2>
+      <label class="pom__area">
+        <span class="cp-label">Three concrete changes (not “try harder”)</span>
+        <textarea class="cp-input" rows="4" data-pom-changes placeholder="1. Run the field card first&#10;2. Read the README out loud&#10;3. One person owns the round log"></textarea>
+      </label>
+    </section>
+
+    <div class="pom__actions">
+      <button type="button" class="cp-btn cp-btn--primary" data-pom-preview>Build the report</button>
+      <button type="button" class="cp-btn" data-pom-copy>Copy Markdown</button>
+      <button type="button" class="cp-btn" data-pom-download>Download .md</button>
+      <button type="button" class="cp-btn cp-btn--ghost cp-btn--danger" data-pom-clear>Clear</button>
+      <span class="pom__msg" role="status" data-pom-msg></span>
+    </div>
+
+    <pre class="pom__preview" data-pom-preview-out hidden></pre>
+
+    <template data-pom-tpl>
+      <div class="pom__miss">
+        <select class="cp-input" data-miss-area aria-label="Area">
+          {areas.map((a) => <option value={a.label}>{a.label}</option>)}
+        </select>
+        <input class="cp-input" type="text" data-miss-what placeholder="What was missed" aria-label="What was missed" />
+        <input class="cp-input" type="text" data-miss-why placeholder="Why it happened" aria-label="Why it happened" />
+        <input class="cp-input" type="text" data-miss-fix placeholder="What to change" aria-label="What to change" />
+        <button type="button" class="cp-btn cp-btn--sm cp-btn--ghost" data-miss-del aria-label="Remove this row">✕</button>
+      </div>
+    </template>
+  </div>
+</StarlightPage>
+
+<script>
+  import { getValue, setValue } from '../../scripts/store';
+
+  interface Miss {
+    area: string;
+    what: string;
+    why: string;
+    fix: string;
+  }
+  interface Doc {
+    round: string;
+    image: string;
+    score: string;
+    out: string;
+    misses: Miss[];
+    good: string;
+    time: string;
+    changes: string;
+  }
+
+  const root = document.querySelector<HTMLElement>('[data-pom]')!;
+  const $ = <T extends HTMLElement = HTMLElement>(s: string) => root.querySelector<T>(s)!;
+
+  function readForm(): Doc {
+    return {
+      round: $<HTMLSelectElement>('[data-pom-round]').value,
+      image: $<HTMLSelectElement>('[data-pom-image]').value,
+      score: $<HTMLInputElement>('[data-pom-score]').value,
+      out: $<HTMLInputElement>('[data-pom-out]').value,
+      good: $<HTMLTextAreaElement>('[data-pom-good]').value,
+      time: $<HTMLTextAreaElement>('[data-pom-time]').value,
+      changes: $<HTMLTextAreaElement>('[data-pom-changes]').value,
+      misses: [...root.querySelectorAll<HTMLElement>('.pom__miss')].map((row) => ({
+        area: row.querySelector<HTMLSelectElement>('[data-miss-area]')!.value,
+        what: row.querySelector<HTMLInputElement>('[data-miss-what]')!.value.trim(),
+        why: row.querySelector<HTMLInputElement>('[data-miss-why]')!.value.trim(),
+        fix: row.querySelector<HTMLInputElement>('[data-miss-fix]')!.value.trim(),
+      })),
+    };
+  }
+
+  function renderMiss(m: Miss) {
+    const tpl = $<HTMLTemplateElement>('[data-pom-tpl]').content;
+    const node = tpl.firstElementChild!.cloneNode(true) as HTMLElement;
+    node.querySelector<HTMLSelectElement>('[data-miss-area]')!.value = m.area;
+    node.querySelector<HTMLInputElement>('[data-miss-what]')!.value = m.what;
+    node.querySelector<HTMLInputElement>('[data-miss-why]')!.value = m.why;
+    node.querySelector<HTMLInputElement>('[data-miss-fix]')!.value = m.fix;
+    $('[data-pom-misses]').append(node);
+  }
+
+  function fill(d: Doc) {
+    $<HTMLSelectElement>('[data-pom-round]').value = d.round;
+    $<HTMLSelectElement>('[data-pom-image]').value = d.image;
+    $<HTMLInputElement>('[data-pom-score]').value = d.score;
+    $<HTMLInputElement>('[data-pom-out]').value = d.out;
+    $<HTMLTextAreaElement>('[data-pom-good]').value = d.good;
+    $<HTMLTextAreaElement>('[data-pom-time]').value = d.time;
+    $<HTMLTextAreaElement>('[data-pom-changes]').value = d.changes;
+    $('[data-pom-misses]').innerHTML = '';
+    (d.misses.length ? d.misses : [{ area: 'Users & groups', what: '', why: '', fix: '' }]).forEach(renderMiss);
+  }
+
+  function toMarkdown(d: Doc): string {
+    const date = new Date().toISOString().slice(0, 10);
+    const misses = d.misses.filter((m) => m.what || m.fix);
+    const out: string[] = [
+      `# Post-mortem — ${d.round}, ${d.image}`,
+      '',
+      `Date: ${date}`,
+      `Score: ${d.score || '?'}${d.out ? ` / ${d.out}` : ''}`,
+      '',
+      '## What we missed',
+      '',
+    ];
+    if (misses.length) {
+      out.push('| Area | What | Why | Change |', '| --- | --- | --- | --- |');
+      out.push(...misses.map((m) => `| ${cell(m.area)} | ${cell(m.what)} | ${cell(m.why)} | ${cell(m.fix)} |`));
+    } else out.push('_none recorded_');
+    out.push('', '## What went well', '', d.good || '_none recorded_', '');
+    out.push('## What cost us time', '', d.time || '_none recorded_', '');
+    out.push('## What changes next round', '', d.changes || '_none recorded_', '');
+    out.push('', '---', '', 'Written with the Rampart round post-mortem tool.');
+    return out.join('\n');
+  }
+
+  const cell = (s: string) => (s || '—').replace(/\|/g, '\\|');
+
+  let doc = getValue<Doc | null>('post-mortem', null);
+  fill(
+    doc ?? {
+      round: $<HTMLSelectElement>('[data-pom-round]').options[0].value,
+      image: $<HTMLSelectElement>('[data-pom-image]').options[0].value,
+      score: '',
+      out: '100',
+      misses: [{ area: 'Users & groups', what: '', why: '', fix: '' }],
+      good: '',
+      time: '',
+      changes: '',
+    },
+  );
+
+  const save = () => setValue('post-mortem', readForm());
+  root.addEventListener('input', save);
+  root.addEventListener('change', save);
+
+  $('[data-pom-add]').addEventListener('click', () => {
+    renderMiss({ area: 'Users & groups', what: '', why: '', fix: '' });
+    save();
+  });
+  root.addEventListener('click', (e) => {
+    const del = (e.target as HTMLElement).closest('[data-miss-del]');
+    if (del) {
+      del.closest('.pom__miss')?.remove();
+      save();
+    }
+  });
+
+  const msg = (t: string) => {
+    const el = $('[data-pom-msg]');
+    el.textContent = t;
+    setTimeout(() => (el.textContent = ''), 2500);
+  };
+
+  $('[data-pom-preview]').addEventListener('click', () => {
+    const pre = $('[data-pom-preview-out]');
+    pre.textContent = toMarkdown(readForm());
+    pre.hidden = false;
+    msg('Report built below.');
+  });
+
+  $('[data-pom-copy]').addEventListener('click', async (e) => {
+    const text = toMarkdown(readForm());
+    try {
+      await navigator.clipboard.writeText(text);
+      msg('Markdown copied.');
+      (e.currentTarget as HTMLButtonElement).blur();
+    } catch {
+      window.prompt('Copy this:', text);
+    }
+  });
+
+  $('[data-pom-download]').addEventListener('click', () => {
+    const d = readForm();
+    const slug = `${d.round}-${d.image}`.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([toMarkdown(d) + '\n'], { type: 'text/markdown' }));
+    a.download = `post-mortem-${slug || 'round'}.md`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    msg('Downloaded.');
+  });
+
+  $('[data-pom-clear]').addEventListener('click', () => {
+    if (!confirm('Clear this post-mortem? Download it first if you want to keep it.')) return;
+    setValue('post-mortem', null);
+    location.reload();
+  });
+</script>
+
+<style>
+  .pom {
+    display: grid;
+    gap: 1.1rem;
+  }
+  .pom__intro {
+    margin: 0;
+    color: var(--sl-color-gray-2);
+  }
+  .pom__top {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    padding: 0.9rem 1rem;
+    border: 1px solid var(--cp-border);
+    border-radius: var(--cp-radius);
+    background: var(--cp-card);
+  }
+  .pom__field {
+    display: grid;
+    gap: 0.25rem;
+    flex: 1 1 12rem;
+  }
+  .pom__field--score {
+    flex: 0 1 6rem;
+  }
+  .pom__grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 1rem;
+  }
+  @media (min-width: 56rem) {
+    .pom__grid {
+      grid-template-columns: 1.4fr 1fr;
+    }
+  }
+  .pom__block {
+    display: grid;
+    gap: 0.6rem;
+    padding: 0.9rem 1rem;
+    border: 1px solid var(--cp-border);
+    border-radius: var(--cp-radius);
+    background: var(--cp-card);
+  }
+  .pom__block h2 {
+    margin: 0;
+    color: var(--sl-color-white);
+    font-size: var(--sl-text-lg);
+  }
+  .pom__hint {
+    margin: 0;
+    color: var(--sl-color-gray-3);
+    font-size: var(--sl-text-xs);
+  }
+  .pom__area {
+    display: grid;
+    gap: 0.25rem;
+  }
+  .pom :global(.pom__miss) {
+    display: grid;
+    grid-template-columns: 9rem 1fr 1fr 1fr auto;
+    gap: 0.3rem;
+    margin-bottom: 0.35rem;
+  }
+  @media (max-width: 56rem) {
+    .pom :global(.pom__miss) {
+      grid-template-columns: 1fr 1fr;
+    }
+    .pom :global(.pom__miss > select) {
+      grid-column: 1 / -1;
+    }
+  }
+  .pom__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: center;
+  }
+  .pom__msg {
+    color: var(--cp-success);
+    font-size: var(--sl-text-sm);
+  }
+  .pom__preview {
+    margin: 0;
+    padding: 0.9rem 1rem;
+    border: 1px solid var(--cp-border);
+    border-radius: var(--cp-radius);
+    background: rgba(0, 0, 0, 0.3);
+    color: var(--sl-color-gray-1);
+    font-family: var(--cp-font-mono, ui-monospace, monospace);
+    font-size: 0.75rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+</style>

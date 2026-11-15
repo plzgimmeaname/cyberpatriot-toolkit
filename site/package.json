@@ -8,11 +8,11 @@
     "node": ">=20.19"
   },
   "scripts": {
-    "sync": "node scripts/sync-docs.mjs",
-    "dev": "node scripts/sync-docs.mjs && astro dev",
-    "build": "node scripts/sync-docs.mjs && astro build",
+    "sync": "node scripts/sync-docs.mjs && node scripts/make-brand.mjs",
+    "dev": "node scripts/sync-docs.mjs && node scripts/make-brand.mjs && astro dev",
+    "build": "node scripts/sync-docs.mjs && node scripts/make-brand.mjs && astro build",
     "preview": "astro preview",
-    "check": "node scripts/sync-docs.mjs && astro check",
+    "check": "node scripts/sync-docs.mjs && node scripts/make-brand.mjs && astro check",
     "verify": "node scripts/verify-build.mjs",
     "test": "npm run build && npm run verify"
   },

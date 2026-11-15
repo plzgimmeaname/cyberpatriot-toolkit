@@ -20,12 +20,33 @@ const checklistBadges = {
   ubuntu: { text: 'State', variant: 'note' },
 };
 
+const ORIGIN = site.replace(/\/$/, '');
+
 /** The <head> tags added to every page. The type is written out because a spread inside an
  *  object literal widens `tag` to `string`, which `astro check` rejects. */
 /** @type {Array<{ tag: 'base'|'link'|'meta'|'title'|'style'|'script'|'noscript'|'template'; attrs?: Record<string, string | boolean | undefined>; content?: string }>} */
 const headTags = [
   { tag: 'meta', attrs: { name: 'theme-color', content: '#0b1220' } },
   { tag: 'meta', attrs: { name: 'robots', content: config.noindex ? 'noindex' : 'index,follow' } },
+  // Our own social card and app icon (rendered by scripts/make-brand.mjs).
+  { tag: 'meta', attrs: { property: 'og:site_name', content: config.title } },
+  { tag: 'meta', attrs: { property: 'og:type', content: 'website' } },
+  { tag: 'meta', attrs: { property: 'og:image', content: `${ORIGIN}/og/rampart.png` } },
+  { tag: 'meta', attrs: { property: 'og:image:width', content: '1200' } },
+  { tag: 'meta', attrs: { property: 'og:image:height', content: '630' } },
+  { tag: 'meta', attrs: { property: 'og:image:alt', content: `${config.title} — hardening checklists, tools and scripts for every CyberPatriot image` } },
+  { tag: 'meta', attrs: { name: 'twitter:card', content: 'summary_large_image' } },
+  { tag: 'meta', attrs: { name: 'twitter:image', content: `${ORIGIN}/og/rampart.png` } },
+  // Installable app: manifest, home-screen icon, offline checklists.
+  { tag: 'link', attrs: { rel: 'manifest', href: `${BASE}/manifest.webmanifest` } },
+  { tag: 'link', attrs: { rel: 'apple-touch-icon', href: `${BASE}/og/apple-touch-icon.png`, sizes: '180x180' } },
+  { tag: 'link', attrs: { rel: 'stylesheet', href: `${BASE}/palette.css` } },
+  { tag: 'script', attrs: { src: `${BASE}/palette.js`, defer: true } },
+  {
+    // Never register the worker on localhost: a cached dev page is impossible to refresh.
+    tag: 'script',
+    content: `if('serviceWorker'in navigator&&!/^(localhost|127\\.0\\.0\\.1|\\[::1\\])$/.test(location.hostname)){addEventListener('load',function(){navigator.serviceWorker.register('${BASE}/sw.js',{scope:'${BASE}/'}).catch(function(){})})}`,
+  },
   {
     tag: 'style',
     content: `:root{--sl-color-accent-low:${accent.darkLow};--sl-color-accent:${accent.dark};--sl-color-accent-high:${accent.darkHigh};--cp-gradient:linear-gradient(135deg,${accent.gradient[0]} 0%,${accent.gradient[1]} 100%)}:root[data-theme='light']{--sl-color-accent-low:${accent.lightLow};--sl-color-accent:${accent.light};--sl-color-accent-high:${accent.lightHigh}}`,
@@ -90,8 +111,11 @@ export default defineConfig({
           items: [
             { label: 'README config builder', link: '/tools/config-builder/' },
             { label: 'Round timer', link: '/tools/round-timer/' },
+            { label: 'Field cards', link: '/field-cards/' },
             { label: 'Findings to-do list', link: '/tools/findings/' },
             { label: 'Round log', link: '/tools/round-log/' },
+            { label: 'Score dropped: triage', link: '/tools/triage/' },
+            { label: 'Round post-mortem', link: '/tools/post-mortem/' },
             { label: 'Command finder', link: '/tools/commands/' },
             { label: 'Forensics helper', link: '/tools/forensics/' },
             { label: 'Download the scripts', link: '/downloads/' },
@@ -100,9 +124,19 @@ export default defineConfig({
         {
           label: 'Reference',
           items: [
+            { label: 'Points map', link: '/points-map/' },
+            { label: 'Gotchas by image', link: '/gotchas/' },
+            { label: 'What the scripts do', link: '/automation/' },
             { label: 'Forensics questions', link: '/guides/forensics-questions/' },
             { label: 'Linux service hardening', link: '/guides/linux-service-hardening/' },
             { label: 'Cisco & Packet Tracer', link: '/guides/cisco-networking/' },
+          ],
+        },
+        {
+          label: 'Project',
+          items: [
+            { label: 'Changelog & contributors', link: '/history/' },
+            { label: 'About this site', link: '/about/' },
           ],
         },
         {
@@ -131,7 +165,20 @@ export default defineConfig({
       plugins: [
         starlightLinksValidator({
           errorOnLocalLinks: true,
-          exclude: ['/', '/#checklists', '/toolkit/', '/files/**', '/tools/**', '/progress/', '/downloads/'].map((p) => `${BASE}${p}`),
+          exclude: [
+            '/',
+            '/#checklists',
+            '/toolkit/',
+            '/files/**',
+            '/tools/**',
+            '/progress/',
+            '/downloads/',
+            '/field-cards/',
+            '/points-map/',
+            '/automation/',
+            '/gotchas/',
+            '/history/',
+          ].map((p) => `${BASE}${p}`),
         }),
       ],
     }),

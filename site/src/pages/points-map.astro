@@ -1,0 +1,259 @@
+---
+import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
+import { withBase } from '../data/url';
+import { CATEGORIES } from '../data/coverage';
+import { CHECKLISTS, IMAGE_NAMES, SEASON, checklistSteps, roundsFor } from '../data/site';
+
+interface Row {
+  label: string;
+  hint: string;
+  steps: number;
+  auto: number;
+}
+
+const MAP = CHECKLISTS.map((c) => {
+  const data = checklistSteps[`checklists/${c.id}`];
+  const steps = data?.steps ?? [];
+  const rows: Row[] = CATEGORIES.map((cat) => {
+    const hit = steps.filter((s) => cat.match.test(s.section));
+    return { label: cat.label, hint: cat.hint, steps: hit.length, auto: hit.filter((s) => s.script === 'auto').length };
+  }).filter((r) => r.steps > 0);
+  const rounds = roundsFor(c.image);
+  return {
+    id: c.id,
+    name: c.name,
+    image: IMAGE_NAMES[c.image] ?? c.image,
+    route: data?.route ?? `/checklists/${c.id}/`,
+    total: steps.length,
+    rows,
+    inSeason: rounds.length > 0,
+    rounds,
+    points: rounds.reduce((n, r) => n + (r.imagePoints?.[c.image] ?? 0), 0),
+  };
+}).sort((a, b) => Number(b.inSeason) - Number(a.inSeason));
+
+const totalSteps = MAP.reduce((n, m) => n + m.total, 0);
+const totalRows = MAP.reduce((n, m) => n + m.rows.length, 0);
+const seasonPoints = SEASON.rounds.reduce((n, r) => n + (r.total ?? 0), 0);
+
+const imageNames = MAP;
+---
+
+<StarlightPage
+  frontmatter={{
+    title: 'Points map',
+    description: 'Every scored category in the round, which checklist section covers it, and how many of those steps the script handles.',
+    editUrl: false,
+    tableOfContents: false,
+  }}
+>
+  <div class="pm not-content">
+    <p class="pm__intro">
+      {totalSteps} checklist steps, mapped to the categories the Scoring Report scores. This page is generated from the
+      checklists themselves, so it cannot drift: if a section is renamed, the map moves with it.
+    </p>
+
+    <div class="pm__season">
+      {
+        SEASON.rounds.map((r) => (
+          <div class="pm__round">
+            <span class="pm__round-name">{r.name}</span>
+            <span class="pm__round-points">{r.total} pts</span>
+            <span class="pm__round-images">
+              {r.images.map((i) => (
+                <span class="cp-pill">{IMAGE_NAMES[i] ?? i}</span>
+              ))}
+            </span>
+          </div>
+        ))
+      }
+      <div class="pm__round pm__round--total">
+        <span class="pm__round-name">{SEASON.name}</span>
+        <span class="pm__round-points">{seasonPoints} pts</span>
+        <span class="pm__round-images">across the four rounds</span>
+      </div>
+    </div>
+
+    <aside class="pm__honest">
+      <p>
+        <strong>Read this before you plan around points.</strong> CyberPatriot publishes the total per image (100 points each,
+        plus Cisco and the web challenge). The split <em>inside</em> an image is set per round and shown only on the Scoring
+        Report during the round, so this page does not invent weights: it shows which categories your checklist covers and
+        how many steps each one takes. Check the report in the first minutes and spend the time where it is scoring today.
+      </p>
+    </aside>
+
+    <div class="pm__cards">
+      {
+        imageNames.map((m) => (
+          <section class="pm__card" aria-labelledby={`pm-${m.id}`}>
+            <header class="pm__head">
+              <h2 id={`pm-${m.id}`}>
+                <a href={withBase(m.route)}>{m.name}</a>
+              </h2>
+              <p class="pm__meta">
+                {m.total} steps · {m.rows.length} categories ·{' '}
+                {m.inSeason ? `${m.points} pts across ${m.rounds.length} round${m.rounds.length === 1 ? '' : 's'}` : 'not in CP-19'}
+              </p>
+            </header>
+            <table class="pm__table">
+              <thead>
+                <tr>
+                  <th scope="col">Category</th>
+                  <th scope="col" class="pm__num">Steps</th>
+                  <th scope="col" class="pm__num">Script</th>
+                </tr>
+              </thead>
+              <tbody>
+                {m.rows.map((r) => (
+                  <tr title={r.hint}>
+                    <th scope="row">{r.label}</th>
+                    <td class="pm__num">{r.steps}</td>
+                    <td class="pm__num">{r.auto > 0 ? `✅ ${r.auto}` : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p class="pm__foot">
+              {m.rows.reduce((n, r) => n + r.auto, 0)} of {m.total} steps are done by the script. Hover a category for the
+              Scoring Report wording.
+            </p>
+          </section>
+        ))
+      }
+    </div>
+
+    <p class="pm__note">
+      {totalRows} category entries across {MAP.length} checklists. Categories repeat between images on purpose: the same
+      hardening idea has different commands on Windows, Linux and FreeBSD.
+    </p>
+  </div>
+</StarlightPage>
+
+<style>
+  .pm {
+    display: grid;
+    gap: 1.4rem;
+  }
+  .pm__intro {
+    max-width: 52rem;
+    margin: 0;
+    color: var(--sl-color-gray-2);
+  }
+  .pm__season {
+    display: grid;
+    gap: 1px;
+    border: 1px solid var(--cp-border);
+    border-radius: var(--cp-radius);
+    background: var(--cp-border);
+    overflow: hidden;
+  }
+  .pm__round {
+    display: grid;
+    grid-template-columns: 8rem 5rem 1fr;
+    gap: 0.6rem;
+    align-items: center;
+    padding: 0.55rem 0.9rem;
+    background: var(--cp-card);
+    font-size: var(--sl-text-sm);
+  }
+  @media (max-width: 34rem) {
+    .pm__round {
+      grid-template-columns: 1fr auto;
+    }
+    .pm__round-images {
+      grid-column: 1 / -1;
+    }
+  }
+  .pm__round--total {
+    background: color-mix(in srgb, var(--sl-color-accent) 10%, var(--cp-card));
+    font-weight: 700;
+  }
+  .pm__round-name {
+    color: var(--sl-color-white);
+  }
+  .pm__round-points {
+    color: var(--sl-color-accent-high);
+    font-variant-numeric: tabular-nums;
+  }
+  .pm__round-images {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    align-items: center;
+    color: var(--sl-color-gray-3);
+  }
+  .pm__honest {
+    padding: 0.85rem 1rem;
+    border: 1px solid var(--cp-border);
+    border-left: 3px solid var(--cp-warn, #ffc15e);
+    border-radius: var(--cp-radius-sm);
+    background: var(--cp-card);
+    color: var(--sl-color-gray-2);
+    font-size: var(--sl-text-sm);
+  }
+  .pm__honest p {
+    margin: 0;
+  }
+  .pm__cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(20rem, 1fr));
+    gap: 0.9rem;
+    align-items: start;
+  }
+  .pm__card {
+    padding: 0.8rem 0.9rem;
+    border: 1px solid var(--cp-border);
+    border-radius: var(--cp-radius);
+    background: var(--cp-card);
+  }
+  .pm__head h2 {
+    margin: 0;
+    font-size: var(--sl-text-lg);
+  }
+  .pm__head h2 a {
+    color: var(--sl-color-white);
+    text-decoration: none;
+  }
+  .pm__head h2 a:hover {
+    text-decoration: underline;
+  }
+  .pm__meta {
+    margin: 0.15rem 0 0.6rem;
+    color: var(--sl-color-gray-3);
+    font-size: var(--sl-text-xs);
+  }
+  .pm__table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--sl-text-sm);
+  }
+  .pm__table th,
+  .pm__table td {
+    padding: 0.22rem 0;
+    border-bottom: 1px solid var(--cp-border);
+    text-align: left;
+    font-weight: 400;
+  }
+  .pm__table thead th {
+    color: var(--sl-color-gray-3);
+    font-size: 0.68rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  .pm__table tbody th {
+    color: var(--sl-color-gray-1);
+  }
+  .pm__num {
+    width: 4rem;
+    text-align: right;
+    color: var(--sl-color-gray-2);
+    font-variant-numeric: tabular-nums;
+  }
+  .pm__foot,
+  .pm__note {
+    margin: 0.55rem 0 0;
+    color: var(--sl-color-gray-3);
+    font-size: var(--sl-text-xs);
+  }
+</style>

@@ -57,7 +57,15 @@ powershell -ExecutionPolicy Bypass -File .\scripts\windows\Harden.ps1
 **[https://plzgimmeaname.github.io/cyberpatriot-toolkit/](https://plzgimmeaname.github.io/cyberpatriot-toolkit/)** — [`site/`](site/) turns everything above into a website for people who don't use GitHub. It's built with Astro + Starlight and published to GitHub Pages by `.github/workflows/pages.yml`. To host it somewhere else, set `siteUrl` and `base` in `site/site.config.mjs`.
 
 - **Two sections:** **Toolkit** (dashboard, checklists, tools, scripts, reference: no introductions) for people who know the game, and **Learn** (welcome, 7 lessons, glossary) for beginners. Switch with the tabs at the top.
-- **Interactive checklists:** tick off steps, see your progress, jump to the next step, print, reset for a new image, and **Compact view** to hide the beginner explanations.
+- **Interactive checklists:** tick off steps, see your progress, jump to the next step, print, reset for a new image, and **Compact view** to hide the beginner explanations. Each one shows what has actually been tested (`site/src/data/verified.ts`) instead of claiming it works.
+- **Field cards:** [one printable page per image](site/src/data/field-cards.ts) with the commands that decide the round — no prose, two columns, works offline.
+- **Points map:** [every scored category mapped to the checklist section that covers it](site/src/pages/points-map.astro), generated from the checklists so it cannot drift.
+- **What the scripts do:** an honest [breakdown of ✅ applied / 🔎 checked / ✋ by hand](site/src/pages/automation.astro), counted from the script tags in every step.
+- **Gotchas by image:** [the traps that only exist on one image](site/src/data/gotchas.ts) (Debian has no sudo, Mint has no `auth.log`, pf will lock you out…).
+- **Score-dropped triage:** pick what you touched and see the likely cause, the command that confirms it, and how to put it back.
+- **Round post-mortem:** what you missed, why, and what changes next round, exported as Markdown.
+- **Offline and installable:** a service worker caches the checklists, so they open with no internet; a web app manifest makes the site installable. Progress can be moved between devices with a share link (no account, nothing uploaded).
+- **⌘K / Ctrl-K palette** to jump to any page or any of the 306 checklist steps.
 - **A 7-lesson learning path** for beginners.
 - **Tools:**
   - README config builder: paste the README and get the script's config file
@@ -73,7 +81,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\windows\Harden.ps1
 - **Your names in commands:** checklist commands use the real README names you type once, including what the Copy buttons copy.
 - **Search, dark mode, mobile layout.** No accounts and no tracking: progress is saved in the browser.
 
-The pages are generated from `docs/` at build time, so **edit `docs/` and the website updates itself**. Setup and local preview: [site/README.md](site/README.md).
+The pages are generated from `docs/` at build time, so **edit `docs/` and the website updates itself**. Setup and local preview: [site/README.md](site/README.md). Writing style, step format and the rules that are not negotiable: [CONTENT_STYLE.md](CONTENT_STYLE.md).
 
 ---
 
