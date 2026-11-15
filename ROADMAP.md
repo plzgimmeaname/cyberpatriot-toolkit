@@ -70,9 +70,9 @@ The old scripts (still in the git history) broke images: they disabled Active Di
 ### Tests
 | Script | How it's tested |
 |---|---|
-| Linux | `tests/linux/run-tests.sh` plants ~30 problems in Debian 12, Ubuntu 22.04, Ubuntu 24.04 and Mint 21.3 containers, runs the script and checks 73 results. It also checks that audit mode changes nothing, that nothing is deleted without a README list, `umask 0000`, and real logins with `pamtester`. |
+| Linux | `tests/linux/run-tests.sh` plants ~30 problems in Debian 12, Ubuntu 22.04, Ubuntu 24.04 and Mint 21.3 containers, runs the script and checks 76 results. It also checks that audit mode changes nothing, that nothing is deleted without a README list, `umask 0000`, and real logins with `pamtester`. |
 | Windows | `tests/windows/Test-HardenLogic.ps1`: 82 logic tests with a fake `secedit`. Parses cleanly, no PSScriptAnalyzer findings, PowerShell 5.1 compatible. |
-| FreeBSD | `tests/freebsd/test-harden-logic.sh`: 50 tests under `dash` with fake FreeBSD commands. `shellcheck -s sh` clean. |
+| FreeBSD | `tests/freebsd/test-harden-logic.sh`: 52 tests under `dash` with fake FreeBSD commands. `shellcheck -s sh` clean. |
 
 ---
 

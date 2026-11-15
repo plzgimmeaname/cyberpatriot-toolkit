@@ -12,7 +12,7 @@ fi
 echo "== Installing the practice image's software"
 dpkg -s pamtester >/dev/null 2>&1 || apt-get update -q >/dev/null
 dpkg -s pamtester >/dev/null 2>&1 || apt-get install -y -q sudo openssh-server cron procps iproute2 passwd login pamtester nano \
-  nmap inetutils-telnetd bsdgames netcat-traditional apache2 dconf-cli >/dev/null
+  nmap inetutils-telnetd bsdgames netcat-traditional apache2 dconf-cli unattended-upgrades >/dev/null
 bash /repo/tests/linux/plant-vulns.sh
 
 cd /repo/scripts/linux

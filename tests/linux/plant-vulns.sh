@@ -17,6 +17,8 @@ useradd -r -u 999 -m -s /bin/bash sysbackup       # hidden user with a shell
 passwd -d carol                                   # empty password
 echo 'bob ALL=(ALL) NOPASSWD: ALL' >/etc/sudoers.d/90-bob
 chmod 440 /etc/sudoers.d/90-bob
+echo 'carol ALL=(ALL) NOPASSWD: /bin/ls, NOPASSWD: /bin/cat' >/etc/sudoers.d/91-carol   # two NOPASSWD tags on one line
+chmod 440 /etc/sudoers.d/91-carol
 
 # --- files and permissions ------------------------------------------------
 chmod u+s /usr/bin/find                           # SUID find = instant root
@@ -96,6 +98,11 @@ sed -i 's/^ServerTokens .*/ServerTokens OS/' /etc/apache2/conf-available/securit
 sed -i '0,/Options FollowSymLinks/s//Options Indexes FollowSymLinks/' /etc/apache2/apache2.conf
 
 # --- updates ----------------------------------------------------------------
+# the security origin commented out (no automatic security fixes); the file comes with unattended-upgrades
+if [ -f /etc/apt/apt.conf.d/50unattended-upgrades ]; then
+  sed -i -E 's#^([[:space:]]*)("(\$\{distro_id\}:\$\{distro_codename\}-security|origin=Debian,codename=\$\{distro_codename\}(-security)?,label=Debian-Security)";)#\1//\2#' /etc/apt/apt.conf.d/50unattended-upgrades
+fi
+echo 'bob:x' >/home/bob/.rhosts; chown bob:bob /home/bob/.rhosts   # password-less trust file
 apt-mark hold nano >/dev/null
 
 echo "Planted the practice vulnerabilities."

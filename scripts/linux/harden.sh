@@ -28,7 +28,7 @@
 
 if [ -z "${BASH_VERSION:-}" ]; then echo "Please run this script with bash:  sudo bash $0" >&2; exit 1; fi
 
-SCRIPT_VERSION="2.0.0"
+SCRIPT_VERSION="2.1.0"
 
 # ----------------------------------------------------------------------------
 # Settings (filled in from the command line, the config file, or prompts)
@@ -64,6 +64,8 @@ export LC_ALL=C
 APT_OPTS=(-y -q -o DPkg::Lock::Timeout=180 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
 
 # Section id | title | function
+QUICK=0   # --quick: only the fast, high-value sections (an explicit --only wins)
+QUICK_SECTIONS="users,passwords,firewall,ssh,services,software,kernel,sudoers,updates"
 SECTIONS=(
   "users|Users and groups|sec_users"
   "passwords|Password and lockout policy|sec_passwords"
@@ -275,16 +277,16 @@ _xf_set_line() {
 # stage_set KEYRE NEWLINE [STOPRE] [COMMENT-CHARS]
 #   KEYRE is a lowercase regex for the start of the setting, e.g. "pass_max_days[ \t]"
 stage_set() {
-  local before
-  before=$(md5sum <"$STAGE_TMP")
+  local before   # compared in the shell itself: no md5sum process per setting
+  before=$(<"$STAGE_TMP")
   _xf_set_line "$STAGE_TMP" "$1" "$2" "${3:-}" "${4:-#}"
-  [[ $(md5sum <"$STAGE_TMP") != "$before" ]] && STAGE_CHANGES+=("$2")
+  [[ $(<"$STAGE_TMP") != "$before" ]] && STAGE_CHANGES+=("$2")
 }
 
 # stage_ini SECTION KEY VALUE    (for files like lightdm.conf / gdm3 daemon.conf)
 stage_ini() {
   local before out
-  before=$(md5sum <"$STAGE_TMP")
+  before=$(<"$STAGE_TMP")
   out=$(mktemp)
   SEC=$1 KEY=$2 VAL=$3 awk '
     function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
@@ -300,23 +302,23 @@ stage_ini() {
     END { if (!done) { if (!insec) { print ""; print "[" sec "]" }; print key "=" val } }
   ' "$STAGE_TMP" >"$out" && cat "$out" >"$STAGE_TMP"
   rm -f "$out"
-  [[ $(md5sum <"$STAGE_TMP") != "$before" ]] && STAGE_CHANGES+=("[$1] $2=$3")
+  [[ $(<"$STAGE_TMP") != "$before" ]] && STAGE_CHANGES+=("[$1] $2=$3")
 }
 
 # stage_replace_all SED-EXPRESSION DESCRIPTION   (free-form edit with sed -E)
 stage_sed() {
   local before
-  before=$(md5sum <"$STAGE_TMP")
+  before=$(<"$STAGE_TMP")
   sed -E -i "$1" "$STAGE_TMP"
-  [[ $(md5sum <"$STAGE_TMP") != "$before" ]] && STAGE_CHANGES+=("$2")
+  [[ $(<"$STAGE_TMP") != "$before" ]] && STAGE_CHANGES+=("$2")
 }
 
 # stage_content < text    (replace the whole file with stdin)
 stage_content() {
   local before
-  before=$(md5sum <"$STAGE_TMP")
+  before=$(<"$STAGE_TMP")
   cat >"$STAGE_TMP"
-  [[ $(md5sum <"$STAGE_TMP") != "$before" ]] && STAGE_CHANGES+=("write $STAGE_FILE")
+  [[ $(<"$STAGE_TMP") != "$before" ]] && STAGE_CHANGES+=("write $STAGE_FILE")
 }
 
 stage_commit() {
@@ -426,6 +428,9 @@ ensure_pkg() {
 }
 
 unit_exists() { [[ $HAS_SYSTEMD -eq 1 ]] && systemctl cat "$1" >/dev/null 2>&1; }
+unit_masked() { [[ $(systemctl is-enabled "$1" 2>/dev/null) == masked* ]]; }
+# a unit file on disk (no process): cheap pre-check before the slower systemctl call
+unit_file_present() { local d; for d in /etc/systemd/system /lib/systemd/system /usr/lib/systemd/system /run/systemd/system; do [[ -e $d/$1 || -e $d/$1.service ]] && return 0; done; return 1; }
 unit_active() { systemctl is-active --quiet "$1" 2>/dev/null; }
 unit_enabled() { systemctl is-enabled --quiet "$1" 2>/dev/null; }
 
@@ -590,6 +595,7 @@ sec_users() {
   for line in "${hidden[@]}"; do
     u=${line%% *}
     if [[ $u == postgres ]]; then continue; fi   # the PostgreSQL account normally has a shell
+    if in_list "$u" $all_auth; then continue; fi # the README lists this account: it is not "hidden"
     result REVIEW "Hidden user with a login shell: $line"
     if ask "Delete '$u'? (say NO if it belongs to an installed program)" n strict; then
       fix "Deleted hidden user $u" delete_user "$u"
@@ -612,6 +618,13 @@ sec_users() {
         fix "Removed $m from group $g" gpasswd -d "$m" "$g"
       fi
     done
+  done
+  local gid
+  for g in "${admin_groups[@]}"; do   # members through the primary group do not show in the group's member list
+    gid=$(getent group "$g" | cut -d: -f3)
+    while read -r m; do
+      [[ -z $m ]] || in_list "$m" $AUTHORIZED_ADMINS || result REVIEW "'$m' has '$g' as its primary group (admin rights) - fix with: sudo usermod -g $m $m"
+    done < <(awk -F: -v g="$gid" '$4==g {print $1}' /etc/passwd)
   done
   if getent group sudo >/dev/null; then
     for u in $AUTHORIZED_ADMINS; do
@@ -716,6 +729,9 @@ set_user_passwords() {
 # ============================================================================
 # SECTION: Password and lockout policy
 # ============================================================================
+# pam_has_unix FILE: after editing a PAM file, pam_unix.so must still be there (else nobody can log in)
+pam_has_unix() { grep -Eq '^[[:space:]]*[a-z]+[[:space:]].*pam_unix\.so' "$1"; }
+
 find_pam_module() {
   local d
   for d in /lib/x86_64-linux-gnu/security /usr/lib/x86_64-linux-gnu/security /lib/aarch64-linux-gnu/security \
@@ -739,12 +755,12 @@ sec_passwords() {
 
   info "Applying the age rules to existing users (chage)"
   why "login.defs only affects NEW users. Existing users need chage."
+  local uidmin uidmax
+  uidmin=$(awk '/^UID_MIN/{print $2}' /etc/login.defs 2>/dev/null); uidmax=$(awk '/^UID_MAX/{print $2}' /etc/login.defs 2>/dev/null)
   while IFS=: read -r u _ _ min max warn_age _; do
-    id "$u" >/dev/null 2>&1 || continue
-    list_human_users | grep -qx "$u" || continue
     if [[ $max == 90 && $min == 7 && $warn_age == 14 ]]; then continue; fi
     fix "Password aging for $u: max 90, min 7, warn 14 days (was max=${max:-none} min=${min:-none})" chage -M 90 -m 7 -W 14 "$u"
-  done < <(awk -F: '{print $1":"$2":"$3":"$4":"$5":"$6":"$7}' /etc/shadow)
+  done < <(awk -F: -v lo="${uidmin:-1000}" -v hi="${uidmax:-60000}" 'NR==FNR { if ($3>=lo && $3<=hi) h[$1]=1; next } ($1 in h) {print $1":"$2":"$3":"$4":"$5":"$6":"$7}' /etc/passwd /etc/shadow)
 
   info "Password complexity (pam_pwquality)"
   why "Stops users from choosing short or simple passwords."
@@ -784,7 +800,7 @@ sec_passwords() {
     fi
     stage_sed '/^[[:space:]]*password[[:space:]].*pam_unix\.so/s/[[:space:]]+md5([[:space:]]|$)/ sha512\1/' "pam_unix uses sha512 instead of md5"
     stage_sed '/^[[:space:]]*password[[:space:]].*pam_unix\.so/s/[[:space:]]nullok(_secure)?//g' "remove nullok from password stack"
-    stage_commit "Password history/complexity in common-password"
+    stage_commit "Password history/complexity in common-password" pam_has_unix "$cp"
     [[ -f /etc/security/opasswd ]] || { [[ $MODE == apply ]] && install -m 600 /dev/null /etc/security/opasswd; }
   fi
 
@@ -794,7 +810,7 @@ sec_passwords() {
     why "'nullok' lets an account with an empty password log in without typing anything."
     stage_begin "$ca"
     stage_sed '/^[[:space:]]*auth[[:space:]].*pam_unix\.so/s/[[:space:]]nullok(_secure)?//g' "remove nullok"
-    stage_commit "No empty-password logins (common-auth)"
+    stage_commit "No empty-password logins (common-auth)" pam_has_unix "$ca"
   fi
 
   configure_lockout
@@ -845,14 +861,14 @@ configure_lockout() {
         print; print "auth\toptional\t\t\tpam_faillock.so authsucc"; want=0; next }
       { print }' "$STAGE_TMP" >"$out" && cat "$out" >"$STAGE_TMP"; rm -f "$out"
     STAGE_CHANGES+=("pam_faillock preauth/authfail/authsucc")
-    stage_commit "Lockout lines in common-auth (pam_faillock)"
+    stage_commit "Lockout lines in common-auth (pam_faillock)" pam_has_unix "$ca"
     stage_begin "$cacct"
     grep -q 'pam_faillock\.so' "$STAGE_TMP" || { printf 'account\trequired\t\t\tpam_faillock.so\n' >>"$STAGE_TMP"; STAGE_CHANGES+=("account required pam_faillock.so"); }
     stage_commit "Lockout line in common-account"
   elif find_pam_module pam_tally2.so; then
     stage_begin "$ca"
     stage_sed '0,/^[[:space:]]*auth[[:space:]]/s//auth\trequired\t\t\tpam_tally2.so onerr=fail audit deny=5 unlock_time=900\n&/' "pam_tally2 deny=5 unlock_time=900"
-    stage_commit "Lockout line in common-auth (pam_tally2)"
+    stage_commit "Lockout line in common-auth (pam_tally2)" pam_has_unix "$ca"
     stage_begin "$cacct"
     grep -q 'pam_tally2\.so' "$STAGE_TMP" || { printf 'account\trequired\t\t\tpam_tally2.so\n' >>"$STAGE_TMP"; STAGE_CHANGES+=("account required pam_tally2.so"); }
     stage_commit "Lockout line in common-account"
@@ -923,6 +939,10 @@ critical_ports() { # all firewall ports needed by the critical services
     [[ -n $(catalog_installed_pkgs "$pk") ]] || continue
     out="$out $po"
   done
+  if is_critical ssh openssh sshd openssh-server && [[ -f /etc/ssh/sshd_config ]]; then
+    # SSH on a port other than 22 must stay reachable too
+    out="$out $(awk 'tolower($1)=="port" && $2 ~ /^[0-9]+$/ {print $2"/tcp"}' /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf 2>/dev/null | tr '\n' ' ')"
+  fi
   normalize_list "$out $EXTRA_PORTS" | tr ' ' '\n' | awk 'NF && !seen[$0]++' | tr '\n' ' '
 }
 
@@ -1088,7 +1108,11 @@ sec_services() {
     IFS='|' read -r kw pk un po kind <<<"$entry"
     pkgs=$(catalog_installed_pkgs "$pk")
     any_unit=""
-    for u in $un; do unit_exists "$u" && any_unit="$any_unit $u"; done
+    for u in $un; do
+      # no package of this entry is installed: only look at units that have a file on disk
+      [[ -n $pkgs ]] || unit_file_present "$u" || continue
+      unit_exists "$u" && any_unit="$any_unit $u"
+    done
     [[ -z $pkgs && -z $any_unit ]] && continue
     name=${kw%% *}
 
@@ -1096,6 +1120,8 @@ sec_services() {
     if is_critical $kw; then
       for u in $any_unit; do
         [[ $u == *.socket || $u == *.path ]] && continue
+        # masked on purpose (e.g. samba-ad-dc on a file server): starting it would fail or clash with smbd
+        if [[ $u == samba-ad-dc ]] || unit_masked "$u"; then continue; fi
         if unit_active "$u"; then result OK "Critical service '$u' is running (keeping it)"
         elif unit_active "${u%.service}.socket"; then result OK "Critical service '$u' starts on demand (${u%.service}.socket is listening, keeping it)"
         else fix "Start critical service '$u' (README says it must run)" systemctl enable --now "$u"; fi
@@ -1114,12 +1140,12 @@ sec_services() {
       careful)
         result REVIEW "'$name' is installed but not listed as critical in the README"
         if ask "Stop and disable $name? (say NO if anyone needs to log in over SSH)" n strict; then
-          for u in $any_unit; do fix "Stopped and disabled $u" systemctl disable --now "$u"; done
+          for u in $any_unit; do unit_masked "$u" || fix "Stopped and disabled $u" systemctl disable --now "$u"; done
         fi ;;
       situational)
         result REVIEW "'$name' is installed ($pkgs) but the README doesn't list it as critical"
         if ask "Stop and disable $name?" y; then
-          for u in $any_unit; do fix "Stopped and disabled $u" systemctl disable --now "$u"; done
+          for u in $any_unit; do unit_masked "$u" || fix "Stopped and disabled $u" systemctl disable --now "$u"; done
           if [[ -n $pkgs ]] && ask "Also uninstall $name ($pkgs)?" n strict; then
             # shellcheck disable=SC2086
             fix "Removed $name" apt-get "${APT_OPTS[@]}" purge $pkgs
@@ -1230,13 +1256,27 @@ sec_software() {
   fi
 }
 
+# pkg_is_critical PKG: the README lists the package itself, or a service keyword whose catalog entry contains it
+# (README says "VNC", package is x11vnc)
+pkg_is_critical() {
+  local entry kw pk un po kind
+  is_critical "$1" && return 0
+  for entry in "${SERVICE_CATALOG[@]}"; do
+    IFS='|' read -r kw pk un po kind <<<"$entry"
+    [[ " $pk " == *" $1 "* ]] || continue
+    # shellcheck disable=SC2086
+    is_critical $kw && return 0
+  done
+  return 1
+}
+
 _software_group() {
   local label=$1; shift
   if [[ $# -eq 0 ]]; then result OK "No $label found"; return; fi
   result REVIEW "Found $label: $*"
   local keep=() remove=() p
   for p in "$@"; do
-    if is_critical "$p"; then keep+=("$p"); else remove+=("$p"); fi
+    if pkg_is_critical "$p"; then keep+=("$p"); else remove+=("$p"); fi
   done
   [[ ${#keep[@]} -gt 0 ]] && result OK "Keeping ${keep[*]} (listed in the README)"
   [[ ${#remove[@]} -eq 0 ]] && return
@@ -1352,7 +1392,7 @@ sec_kernel() {
   info "Kernel and network security settings (/etc/sysctl.conf)"
   why "These turn on memory protections (ASLR), stop IP spoofing tricks, and block SYN-flood attacks."
 
-  local s key val re f
+  local s key val re f line
   stage_begin /etc/sysctl.conf
   for s in "${settings[@]}"; do
     key=${s%%=*}; val=${s#*=}
@@ -1370,13 +1410,13 @@ sec_kernel() {
   for f in "${sysctl_files[@]}"; do
     [[ -f $f && ! -L $f ]] || continue
     local conflicts=()
-    for s in "${settings[@]}"; do
-      key=${s%%=*}; val=${s#*=}
-      if grep -Eq "^[[:space:]]*${key//./\\.}[[:space:]]*=[[:space:]]*" "$f" && \
-         ! grep -Eq "^[[:space:]]*${key//./\\.}[[:space:]]*=[[:space:]]*${val}[[:space:]]*$" "$f"; then
-        conflicts+=("$key")
-      fi
-    done
+    # a key is in conflict when the file sets it, but never to the value we want
+    mapfile -t conflicts < <(WANT=$(printf '%s\n' "${settings[@]}") awk '
+      BEGIN { n = split(ENVIRON["WANT"], w, "\n"); for (i = 1; i <= n; i++) { k = w[i]; sub(/=.*/, "", k); v = w[i]; sub(/^[^=]*=/, "", v); want[k] = v } }
+      /^[ \t]*[^# \t=][^ \t=]*[ \t]*=/ { k = $0; sub(/^[ \t]*/, "", k); sub(/[ \t]*=.*/, "", k)
+        v = $0; sub(/^[^=]*=[ \t]*/, "", v); sub(/[ \t]+$/, "", v)
+        if (k in want) { seen[k] = 1; if (v == want[k]) good[k] = 1 } }
+      END { for (k in seen) if (!(k in good)) print k }' "$f")
     [[ ${#conflicts[@]} -eq 0 ]] && continue
     stage_begin "$f"
     for key in "${conflicts[@]}"; do
@@ -1385,12 +1425,20 @@ sec_kernel() {
     stage_commit "Conflicting settings in $f"
   done
 
-  # Check the values actually in use right now
-  local wrong=()
+  # Check the values actually in use right now (one sysctl run for all of them)
+  local wrong=() cur
+  local -A live=()
+  load_live_sysctl() {
+    live=()
+    while IFS= read -r line; do
+      [[ $line == *" = "* ]] && live["${line%% = *}"]=${line#* = }
+    done < <(sysctl -a 2>/dev/null)
+  }
+  load_live_sysctl
   for s in "${settings[@]}"; do
     key=${s%%=*}; val=${s#*=}
-    local cur; cur=$(sysctl -n "$key" 2>/dev/null) || continue
-    [[ $cur == "$val" ]] || wrong+=("$key is $cur (want $val)")
+    [[ -n ${live[$key]+x} ]] || continue
+    [[ ${live[$key]} == "$val" ]] || wrong+=("$key is ${live[$key]} (want $val)")
   done
   if [[ ${#wrong[@]} -eq 0 ]]; then
     result OK "All kernel settings are active right now"
@@ -1400,10 +1448,11 @@ sec_kernel() {
   else
     run sysctl --system
     local still=()
+    load_live_sysctl
     for s in "${settings[@]}"; do
       key=${s%%=*}; val=${s#*=}
-      local cur; cur=$(sysctl -n "$key" 2>/dev/null) || continue
-      [[ $cur == "$val" ]] || still+=("$key")
+      [[ -n ${live[$key]+x} ]] || continue
+      [[ ${live[$key]} == "$val" ]] || still+=("$key")
     done
     if [[ ${#still[@]} -eq 0 ]]; then result CHANGED "Loaded the new kernel settings (sysctl --system)"
     else result FAILED "Some kernel settings could not be loaded now (${still[*]}) - they apply after a reboot"; fi
@@ -1455,6 +1504,8 @@ sec_permissions() {
   getent group shadow >/dev/null || shadow_grp=root
   check_perm /etc/passwd 644 root root
   check_perm /etc/group 644 root root
+  check_perm /etc/passwd- 644 root root
+  check_perm /etc/group- 644 root root
   check_perm /etc/shadow 640 root "$shadow_grp"
   check_perm /etc/gshadow 640 root "$shadow_grp"
   check_perm /etc/shadow- 640 root "$shadow_grp"
@@ -1481,10 +1532,11 @@ sec_permissions() {
   info "Home folder permissions"
   why "Other users should not be able to look inside your home folder."
   local u home mode owner
-  while read -r u; do
-    home=$(getent passwd "$u" | cut -d: -f6)
+  local umin umax
+  umin=$(awk '/^UID_MIN/{print $2}' /etc/login.defs 2>/dev/null); umax=$(awk '/^UID_MAX/{print $2}' /etc/login.defs 2>/dev/null)
+  while read -r u home; do
     [[ -d $home && $home == /home/* ]] || continue
-    mode=$(stat -c '%a' "$home"); owner=$(stat -c '%U' "$home")
+    read -r mode owner < <(stat -c '%a %U' "$home")
     if [[ $owner != "$u" ]]; then
       result REVIEW "$home is owned by '$owner', not '$u'"
       if ask "Give $home back to $u?" y; then fix "chown $u $home" chown "$u:" "$home"; fi
@@ -1494,20 +1546,34 @@ sec_permissions() {
     else
       result OK "$home is private ($mode)"
     fi
-  done < <(list_human_users)
+  done < <(awk -F: -v lo="${umin:-1000}" -v hi="${umax:-60000}" '$3>=lo && $3<=hi {print $1, $6}' /etc/passwd)
 
   local prune=( -path /proc -o -path /sys -o -path /dev -o -path /run -o -path /snap -o -path /tmp -o -path /var/tmp -o -path /var/crash -o -path /dev/shm -o -ipath '*cyberpatriot*' )
-  info "World-writable files (anyone can change them)"
-  local -a ww roots
+  # ONE pass over the disks answers four questions (the comma operator runs every test on each file):
+  # world-writable files, world-writable folders without sticky bit, SUID/SGID files, files with no owner.
+  info "Scanning the disks once: world-writable files and folders, SUID/SGID programs, files with no owner"
+  local -a ww wwd suid noown roots
+  local sline
   mapfile -t roots < <(scan_roots)
-  mapfile -t ww < <(find "${roots[@]}" -xdev \( "${prune[@]}" \) -prune -o -type f -perm -0002 -print 2>/dev/null)
+  while IFS= read -r sline; do
+    case ${sline:0:2} in
+      'W ') ww+=("${sline:2}") ;;
+      'D ') wwd+=("${sline:2}") ;;
+      'S ') suid+=("${sline:2}") ;;
+      'N ') [[ ${#noown[@]} -lt 200 ]] && noown+=("${sline:2}") ;;
+    esac
+  done < <(find "${roots[@]}" -xdev \( "${prune[@]}" \) -prune -o \( \
+      \( -type f -perm -0002 -printf 'W %p\n' \) , \
+      \( -type d -perm -0002 ! -perm -1000 -printf 'D %p\n' \) , \
+      \( -type f \( -perm -4000 -o -perm -2000 \) -printf 'S %p\n' \) , \
+      \( \( -nouser -o -nogroup \) -printf 'N %p\n' \) \) 2>/dev/null)
+
+  info "World-writable files (anyone can change them)"
   if [[ ${#ww[@]} -eq 0 ]]; then result OK "No world-writable files"; else
     result REVIEW "${#ww[@]} file(s) can be changed by ANY user"
     show_list 15 "${ww[@]}"
     if ask "Remove 'everyone can write' from these files?" y; then fix "Removed world-write from ${#ww[@]} files" chmod o-w -- "${ww[@]}"; fi
   fi
-  local -a wwd
-  mapfile -t wwd < <(find "${roots[@]}" -xdev \( "${prune[@]}" \) -prune -o -type d -perm -0002 ! -perm -1000 -print 2>/dev/null)
   if [[ ${#wwd[@]} -eq 0 ]]; then result OK "All world-writable folders have the sticky bit"; else
     result REVIEW "${#wwd[@]} folder(s) are writable by anyone without the 'sticky bit' (users can delete each other's files)"
     show_list 10 "${wwd[@]}"
@@ -1516,8 +1582,7 @@ sec_permissions() {
 
   info "Programs that run as root for any user (SUID/SGID)"
   why "A SUID program always runs as its owner (root). SUID on find, vim, bash or python lets any user become root."
-  local -a suid danger unknown
-  mapfile -t suid < <(find "${roots[@]}" -xdev \( "${prune[@]}" \) -prune -o -type f \( -perm -4000 -o -perm -2000 \) -print 2>/dev/null)
+  local -a danger unknown
   for f in "${suid[@]}"; do
     if [[ $f =~ $DANGER_SUID_RE ]]; then danger+=("$f")
     elif ! [[ $f =~ $SAFE_SUID_RE ]]; then unknown+=("$f"); fi
@@ -1534,8 +1599,6 @@ sec_permissions() {
   fi
 
   info "Files with no owner (left behind by deleted users)"
-  local -a noown
-  mapfile -t noown < <(find "${roots[@]}" -xdev \( "${prune[@]}" \) -prune -o \( -nouser -o -nogroup \) -print 2>/dev/null | head -200)
   if [[ ${#noown[@]} -eq 0 ]]; then result OK "No orphaned files"; else
     result REVIEW "${#noown[@]} file(s) belong to users that no longer exist - check them for prohibited content"
     show_list 10 "${noown[@]}"
@@ -1544,7 +1607,9 @@ sec_permissions() {
   if have getcap; then
     info "Programs with special 'capabilities' (a hidden form of SUID)"
     local -a caps
-    mapfile -t caps < <(getcap -r / 2>/dev/null | grep -Ev '/(ping|mtr-packet|gst-ptp-helper|arping|clockdiff|rlogin|dumpcap|fping|traceroute6\.iputils) |^/snap/|^/proc/')
+    local -a capdirs=(); local cd_
+    for cd_ in /usr /opt /bin /sbin /lib /lib64 /srv /home /root /tmp /var/tmp; do [[ -d $cd_ && ! -L $cd_ ]] && capdirs+=("$cd_"); done
+    mapfile -t caps < <(getcap -r "${capdirs[@]}" 2>/dev/null | grep -Ev '/(ping|mtr-packet|gst-ptp-helper|arping|clockdiff|rlogin|dumpcap|fping|traceroute6\.iputils) |^/snap/|^/proc/')
     if [[ ${#caps[@]} -eq 0 ]]; then result OK "No unusual file capabilities"; fi
     local c path
     for c in "${caps[@]}"; do
@@ -1581,7 +1646,8 @@ sec_sudoers() {
     stage_begin "$f"
     if grep -Eq '^[^#]*NOPASSWD' "$f"; then
       problems+=("NOPASSWD")
-      stage_sed 's/^([^#]*)NOPASSWD:[[:space:]]*/\1/' "remove NOPASSWD (sudo must ask for a password)"
+      # loop: "NOPASSWD: /bin/ls, NOPASSWD: /bin/cat" has more than one tag on a line
+      stage_sed ':a; s/^([^#]*)NOPASSWD:[[:space:]]*/\1/; ta' "remove NOPASSWD (sudo must ask for a password)"
     fi
     if grep -Eq '^[^#]*!authenticate' "$f"; then
       problems+=("!authenticate")
@@ -1595,13 +1661,17 @@ sec_sudoers() {
     # staged copy, so the match below sees the line after the edits above
     # (e.g. with NOPASSWD already removed).
     local rules=()
-    mapfile -t rules < <(grep -Ev '^[[:space:]]*(#|$)' "$STAGE_TMP" | grep -E '^[[:space:]]*[%A-Za-z0-9_.-]+[[:space:]]+[^=]*=')
+    mapfile -t rules < <(grep -Ev '^[[:space:]]*(#|$)' "$STAGE_TMP" | grep -E '^[[:space:]]*[%A-Za-z0-9_.,-]+[[:space:]]+[^=]*=')
     for line in "${rules[@]}"; do
       u=$(awk '{print $1}' <<<"$line")
       case $u in
         root|%sudo|%admin|%wheel|Defaults*|User_Alias|Runas_Alias|Host_Alias|Cmnd_Alias|@include*|\#include*) continue ;;
       esac
-      if [[ $u != %* ]] && in_list "$u" $AUTHORIZED_ADMINS; then continue; fi
+      if [[ $u != %* ]]; then   # "alice,bob ALL=..." names several users
+        local one all_ok=1
+        for one in ${u//,/ }; do in_list "$one" $AUTHORIZED_ADMINS || all_ok=0; done
+        [[ $all_ok -eq 1 ]] && continue
+      fi
       problems+=("rule for $u")
       result REVIEW "$f gives '$u' sudo rights: $line"
       if [[ $README_ADMINS_GIVEN -eq 1 ]] && ask "Disable this sudo rule?" y; then
@@ -1788,6 +1858,21 @@ sec_backdoors() {
   local -a profd
   mapfile -t profd < <(find /etc/profile.d -maxdepth 1 -type f ! -name 'debuginfod.*' ! -name '01-locale-fix.sh' 2>/dev/null | not_owned)
   [[ ${#profd[@]} -gt 0 ]] && { result REVIEW "Files in /etc/profile.d not from any package"; show_list 10 "${profd[@]}"; }
+
+  info "Trust files that allow logins without a password (.rhosts, .netrc, hosts.equiv)"
+  why "These old files let other computers (or scripts) log in as a user with no password."
+  local -a trust=()
+  for f in /etc/hosts.equiv /etc/shosts.equiv /root/.rhosts /root/.shosts /root/.netrc; do [[ -s $f ]] && trust+=("$f"); done
+  for home in $(human_homes); do
+    for f in "$home/.rhosts" "$home/.shosts" "$home/.netrc"; do [[ -s $f ]] && trust+=("$f"); done
+  done
+  if [[ ${#trust[@]} -eq 0 ]]; then result OK "No .rhosts, .netrc or hosts.equiv files"; else
+    result REVIEW "${#trust[@]} password-less trust file(s) found"
+    show_list 10 "${trust[@]}"
+    if ask "Delete these files? (they are backed up first)" y strict; then
+      backup "${trust[@]}"; fix "Deleted ${#trust[@]} trust file(s)" rm -f -- "${trust[@]}"
+    fi
+  fi
 
   info "SSH keys that allow password-less login (authorized_keys)"
   why "Anyone who has the matching private key can log in as that user without knowing the password."
@@ -2427,6 +2512,7 @@ harden_samba() {
   stage_ini global "map to guest" never
   stage_ini global "usershare allow guests" no
   stage_ini global "server min protocol" SMB2
+  stage_ini global "null passwords" no
   stage_sed 's/^([[:space:]]*(guest ok|public)[[:space:]]*=[[:space:]]*)yes/\1no/I' "shares: no guest access"
   stage_commit "Samba settings" testparm -s
   [[ $(last_status) == CHANGED ]] && reload_unit smbd
@@ -2440,6 +2526,32 @@ harden_samba() {
   fi
   local shares; shares=$(testparm -s 2>/dev/null | grep -E '^\[' | tr -d '[]' | tr '\n' ' ')
   [[ -n $shares ]] && result REVIEW "Samba shares: $shares- make sure each one is needed and has the right permissions"
+}
+
+harden_postgres() {
+  local f hba conf
+  info "PostgreSQL database (critical: checking it, not removing it)"
+  why "'trust' in pg_hba.conf lets people in with no password; listening on every address exposes the database to the network."
+  for hba in /etc/postgresql/*/*/pg_hba.conf; do
+    [[ -f $hba ]] || continue
+    conf=$(dirname "$hba")/postgresql.conf
+    local -a trusts
+    mapfile -t trusts < <(grep -En '^[[:space:]]*(local|host|hostssl|hostnossl)[[:space:]].*[[:space:]]trust([[:space:]]|$)' "$hba")
+    if [[ ${#trusts[@]} -eq 0 ]]; then result OK "$hba has no 'trust' logins"; else
+      result REVIEW "$hba lets people log in with NO password ('trust') on ${#trusts[@]} line(s)"
+      show_list 5 "${trusts[@]}"
+      # md5 stays safe for roles that have a password; a role without one can no longer log in, so never automatic
+      if ask "Change 'trust' to 'scram-sha-256'? Every role then needs a password - say NO if the README's website uses a role without one" n strict; then
+        stage_begin "$hba"
+        stage_sed 's/^([[:space:]]*(local|host|hostssl|hostnossl)[[:space:]].*[[:space:]])trust([[:space:]]|$)/\1scram-sha-256\3/' "trust -> scram-sha-256"
+        stage_commit "PostgreSQL: no password-less logins ($hba)"
+        [[ $(last_status) == CHANGED ]] && reload_unit postgresql
+      fi
+    fi
+    if [[ -f $conf ]] && grep -Eq "^[[:space:]]*listen_addresses[[:space:]]*=[[:space:]]*'?\*'?" "$conf"; then
+      result REVIEW "PostgreSQL listens on every network address (listen_addresses='*' in $conf) - set 'localhost' unless other computers need it"
+    fi
+  done
 }
 
 harden_bind() {
@@ -2481,6 +2593,7 @@ sec_apps() {
   if is_critical ftp proftpd && [[ -f /etc/proftpd/proftpd.conf ]]; then harden_proftpd; did=1; fi
   if is_critical ftp pure-ftpd pureftpd && [[ -d /etc/pure-ftpd/conf ]]; then harden_pureftpd; did=1; fi
   if is_critical samba smb smbd cifs fileshare && pkg_installed samba; then harden_samba; did=1; fi
+  if is_critical postgresql postgres database sql db && pkg_installed postgresql; then harden_postgres; did=1; fi
   if is_critical dns bind bind9 named && pkg_installed bind9; then harden_bind; did=1; fi
   if is_critical mail smtp postfix && pkg_installed postfix; then harden_postfix; did=1; fi
   [[ $did -eq 0 ]] && result SKIPPED "No critical web, database, FTP, Samba, DNS or mail service is listed (or installed)"
@@ -2550,10 +2663,12 @@ sec_updates() {
     stage_set "apt::periodic::download-upgradeable-packages[ \t]" 'APT::Periodic::Download-Upgradeable-Packages "1";' "" "/"
     stage_commit "Daily update check (10periodic)"
   fi
-  if [[ -f /etc/apt/apt.conf.d/50unattended-upgrades ]] && grep -Eq '^[[:space:]]*Unattended-Upgrade::Automatic-Reboot[[:space:]]+"true"' /etc/apt/apt.conf.d/50unattended-upgrades; then
+  if [[ -f /etc/apt/apt.conf.d/50unattended-upgrades ]]; then
     stage_begin /etc/apt/apt.conf.d/50unattended-upgrades
-    stage_set "unattended-upgrade::automatic-reboot[ \t]" 'Unattended-Upgrade::Automatic-Reboot "false";' "" "/"
-    stage_commit "Updates never reboot the computer by themselves"
+    stage_sed 's/^([[:space:]]*Unattended-Upgrade::Automatic-Reboot[[:space:]]+)"true"/\1"false"/' "updates never reboot the computer by themselves"
+    # the security origin must not be commented out (a planted '//' there means no automatic security fixes)
+    stage_sed 's#^([[:space:]]*)//[[:space:]]*("(\$\{distro_id\}:\$\{distro_codename\}-security|origin=Debian,codename=\$\{distro_codename\}(-security)?,label=Debian-Security)";)#\1\2#' "turn the security update source back on"
+    stage_commit "Unattended upgrades: security source on, no automatic reboots"
   fi
   if [[ $IS_MINT -eq 1 ]] && have mintupdate-automation; then
     if systemctl is-enabled --quiet mintupdate-automation-upgrade.timer 2>/dev/null; then
@@ -2725,7 +2840,7 @@ menu() {
       printf '  %2d) %s\n' "$i" "$title"
       i=$((i + 1))
     done
-    say "   a) Run ALL sections"
+    if [[ -n $ONLY_SECTIONS ]]; then say "   a) Run the selected sections only (${ONLY_SECTIONS//,/ })"; else say "   a) Run ALL sections"; fi
     if [[ $MODE == audit ]]; then say "   m) Switch to APPLY mode (make changes)"; else say "   m) Switch to AUDIT mode (report only)"; fi
     say "   r) Re-enter the README information"
     say "   s) Show the summary so far"
@@ -2734,7 +2849,10 @@ menu() {
     read_tty
     case ${REPLY,,} in
       q|quit|exit) break ;;
-      a|all) if confirm_apply; then for entry in "${SECTIONS[@]}"; do run_section "${entry%%|*}"; done; fi ;;
+      a|all) if confirm_apply; then
+               if [[ -n $ONLY_SECTIONS ]]; then for id in ${ONLY_SECTIONS//,/ }; do run_section "$id"; done
+               else for entry in "${SECTIONS[@]}"; do run_section "${entry%%|*}"; done; fi
+             fi ;;
       m) if [[ $MODE == audit ]]; then MODE=apply; else MODE=audit; fi ;;
       r) prompt_readme; finalize_readme; show_readme_summary ;;
       s) print_summary ;;
@@ -2779,7 +2897,7 @@ main() {
       -y|--yes) ASSUME_YES=1 ;;
       --config) CONFIG_FILE=${2:-}; shift ;;
       --only) ONLY_SECTIONS=${2:-}; shift ;;
-      --quick) ONLY_SECTIONS="users,passwords,firewall,ssh,services,software,kernel,sudoers,updates" ;;
+      --quick) QUICK=1 ;;
       --list) list_only=1 ;;
       --no-color) NO_COLOR=1 ;;
       -h|--help) usage; exit 0 ;;
@@ -2792,9 +2910,14 @@ main() {
     for entry in "${SECTIONS[@]}"; do IFS='|' read -r id title _ <<<"$entry"; printf '  %-12s %s\n' "$id" "$title"; done
     exit 0
   fi
+  # --only beats --quick, whatever order they were typed in
+  if [[ -z $ONLY_SECTIONS && $QUICK -eq 1 ]]; then ONLY_SECTIONS=$QUICK_SECTIONS; fi
   if [[ -n $ONLY_SECTIONS ]]; then   # reject typos before anything runs
+    local found
     for id in ${ONLY_SECTIONS//,/ }; do
-      [[ "|${SECTIONS[*]}" == *"|$id|"* || "${SECTIONS[*]}" == "$id|"* || "${SECTIONS[*]}" == *" $id|"* ]] || die "Unknown section '$id' (see --list)"
+      found=0
+      for entry in "${SECTIONS[@]}"; do [[ ${entry%%|*} == "$id" ]] && found=1; done
+      [[ $found -eq 1 ]] || die "Unknown section '$id' (see --list)"
     done
   fi
   [[ $EUID -eq 0 ]] || die "Please run this as root:   sudo bash $0"

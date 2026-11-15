@@ -91,6 +91,9 @@ check "firefox: pop-up/safe browsing back on"    "! grep -E '^user_pref\(\"(dom\
 check "firefox: user.js add-on warning back on"  "! grep -E '^user_pref' $FF/user.js"
 check "firefox: other settings kept"             "grep -q '^user_pref(\"browser.startup.homepage' $FF/prefs.js"
 check "firefox: prefs.js still owned by bob"     "[ \"\$(stat -c %U $FF/prefs.js)\" = bob ]"
+check "security origin active in 50unattended-upgrades" '[ ! -f /etc/apt/apt.conf.d/50unattended-upgrades ] || grep -Eq "^[[:space:]]*\"(\\$\{distro_id\}:\\$\{distro_codename\}-security|origin=Debian,codename=\\$\{distro_codename\}(-security)?,label=Debian-Security)\";" /etc/apt/apt.conf.d/50unattended-upgrades'
+check "bob's .rhosts removed"                    '[ ! -e /home/bob/.rhosts ]'
+check "carol's two-tag NOPASSWD rule gone"       '! grep -rE "NOPASSWD" /etc/sudoers.d/91-carol 2>/dev/null'
 check "automatic updates on"                     'grep -q "Unattended-Upgrade \"1\"" /etc/apt/apt.conf.d/20auto-upgrades'
 check "held package released"                    '[ -z "$(apt-mark showhold)" ]'
 check "audit rules installed"                    '[ -f /etc/audit/rules.d/50-cyberpatriot.rules ]'

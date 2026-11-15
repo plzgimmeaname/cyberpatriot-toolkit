@@ -21,7 +21,8 @@
 #  Logs and backups: /root/cyberpatriot/
 # =============================================================================
 
-VERSION="2.0.0"
+VERSION="2.1.0"
+QUICK=0
 MODE=""; ASSUME_YES=0; CONFIG_FILE=""; ONLY=""
 AUTHORIZED_USERS=""; AUTHORIZED_ADMINS=""; CRITICAL_SERVICES=""; NEW_PASSWORD=""; FULL_UPGRADE="ask"; EXTRA_PORTS=""
 ADMINS_GIVEN=0; LISTS_GIVEN=0   # did the README info name any admins / any users? (set before the runner is added)
@@ -109,19 +110,25 @@ set_conf() {
   _file=$1; _key=$2; _new=$3; _sep=${4:-'[[:space:]]'}
   _tmp=$(mktemp)
   [ -f "$_file" ] || : >"$_file.harden-new"
-  awk -v key="$_key" -v nl="$_new" -v sep="$_sep" '
-    BEGIN { re = "^[[:space:]]*#?[[:space:]]*" key sep; act = "^[[:space:]]*" key sep }
+  KEY=$_key NL=$_new SEP=$_sep awk '
+    BEGIN { key = tolower(ENVIRON["KEY"]); nl = ENVIRON["NL"]; sep = ENVIRON["SEP"]
+            re = "^[[:space:]]*#?[[:space:]]*" key sep; act = "^[[:space:]]*" key sep }
     { line[NR] = $0 }
     END {
+      # keys are case-insensitive (sshd: "permitrootlogin yes" counts), and a setting
+      # added to sshd_config must go BEFORE the first Match line or it would only apply to that block
+      lim = NR; ml = 0
+      for (i = 1; i <= NR; i++) if (tolower(line[i]) ~ /^[[:space:]]*match[[:space:]]/) { lim = i - 1; ml = i; break }
       t = 0
-      for (i = 1; i <= NR; i++) if (line[i] ~ act) { t = i; break }
-      if (!t) for (i = 1; i <= NR; i++) if (line[i] ~ re) { t = i; break }
+      for (i = 1; i <= lim; i++) if (tolower(line[i]) ~ act) { t = i; break }
+      if (!t) for (i = 1; i <= lim; i++) if (tolower(line[i]) ~ re) { t = i; break }
       for (i = 1; i <= NR; i++) {
+        if (!t && ml && i == ml) print nl
         if (i == t) { print nl; continue }
-        if (t && i > t && line[i] ~ act) { print "# " line[i] "   # duplicate, disabled by harden.sh"; continue }
+        if (t && i > t && i <= lim && tolower(line[i]) ~ act) { print "# " line[i] "   # duplicate, disabled by harden.sh"; continue }
         print line[i]
       }
-      if (!t) print nl
+      if (!t && !ml) print nl
     }' "$( [ -f "$_file" ] && echo "$_file" || echo "$_file.harden-new" )" >"$_tmp"
   rm -f "$_file.harden-new"
   if [ -f "$_file" ] && cmp -s "$_tmp" "$_file"; then rm -f "$_tmp"; result OK "$_new  ($_file)"; return 0; fi
@@ -265,6 +272,7 @@ sec_users() {
   case $NEW_PASSWORD in *[A-Z]*) ;; *) result FAILED "Password too weak (needs upper case)"; return ;; esac
   case $NEW_PASSWORD in *[a-z]*) ;; *) result FAILED "Password too weak (needs lower case)"; return ;; esac
   case $NEW_PASSWORD in *[0-9]*) ;; *) result FAILED "Password too weak (needs a number)"; return ;; esac
+  case $NEW_PASSWORD in *[!A-Za-z0-9]*) ;; *) result FAILED "Password too weak (needs a symbol)"; return ;; esac
   [ ${#NEW_PASSWORD} -ge 12 ] || { result FAILED "Password too weak (needs 12+ characters)"; return; }
   for _u in $_all; do
     [ "$_u" = "$ME" ] && continue
@@ -329,7 +337,10 @@ sec_passwords() {
 # ============================================================================
 crit_ports() {
   _p=""
-  is_critical ssh openssh sshd && _p="$_p 22"
+  if is_critical ssh openssh sshd; then
+    _sp=$(awk 'tolower($1) == "port" && $2 ~ /^[0-9]+$/ { print $2 }' /etc/ssh/sshd_config 2>/dev/null | tr '\n' ' ')
+    _p="$_p ${_sp:-22}"   # sshd on a port other than 22 must stay reachable
+  fi
   is_critical apache nginx web http https && _p="$_p 80 443"
   is_critical ftp && _p="$_p 21"
   is_critical mysql mariadb database && _p="$_p 3306"
@@ -454,16 +465,18 @@ sec_software() {
   _found=$(pkg query '%n' 2>/dev/null | grep -Ei '^(nmap|zenmap|john|hydra|aircrack-ng|hashcat|nikto|sqlmap|wireshark|wireshark-lite|tshark|ettercap|metasploit|ophcrack|medusa|ncrack|netcat|socat|kismet|dsniff|hping3|masscan|crunch|minetest|luanti|supertux|supertuxkart|0ad|freeciv|wesnoth|openttd|xonotic|nethack.*|bsdgames|transmission.*|qbittorrent.*|deluge.*|rtorrent|amule|x11vnc|tigervnc-server|tightvnc|anydesk|teamviewer)$')
   if [ -z "$_found" ]; then result OK "No prohibited packages found"
   else
+    _removed=0
     for _p in $_found; do
       is_critical "$_p" && { result OK "Keeping $_p (README)"; continue; }
       result REVIEW "Prohibited package: $_p"
-      ask "Remove $_p?" y && fix "Removed $_p" pkg delete -y "$_p"
+      if ask "Remove $_p?" y && fix "Removed $_p" pkg delete -y "$_p"; then _removed=1; fi
     done
-    [ "$MODE" = apply ] && run pkg autoremove -y
+    [ "$MODE" = apply ] && [ "$_removed" -eq 1 ] && run pkg autoremove -y
   fi
   result REVIEW "/usr/bin/nc (netcat) is part of FreeBSD itself and can't be removed - look for it in cron jobs and running processes instead"
   info "Known security holes in installed packages (pkg audit)"
-  pkg audit -F >"$WORK_DIR/pkgaudit.txt" 2>&1
+  if [ "$MODE" = audit ]; then pkg audit >"$WORK_DIR/pkgaudit.txt" 2>&1   # audit mode downloads nothing
+  else pkg audit -F >"$WORK_DIR/pkgaudit.txt" 2>&1; fi
   if grep -q 'is vulnerable' "$WORK_DIR/pkgaudit.txt"; then
     grep 'is vulnerable' "$WORK_DIR/pkgaudit.txt" >"$WORK_DIR/pkgaudit2.txt"
     result REVIEW "Vulnerable packages (the updates section can upgrade them)"; show_file_list "$WORK_DIR/pkgaudit2.txt" 10
@@ -503,7 +516,7 @@ sec_kernel() {
              security.bsd.unprivileged_read_msgbuf=0 security.bsd.unprivileged_proc_debug=0 security.bsd.hardlink_check_uid=1 \
              security.bsd.hardlink_check_gid=1 kern.randompid=1 net.inet.tcp.blackhole=2 net.inet.udp.blackhole=1 \
              net.inet.ip.random_id=1 net.inet.ip.redirect=0 net.inet.icmp.drop_redirect=1 net.inet.ip.sourceroute=0 \
-             net.inet.ip.accept_sourceroute=0 net.inet.tcp.drop_synfin=1 net.inet6.ip6.redirect=0 kern.elf64.aslr.enable=1; do
+             net.inet.ip.accept_sourceroute=0 net.inet.tcp.drop_synfin=1 net.inet6.ip6.redirect=0 kern.elf64.aslr.enable=1 kern.coredump=0 net.inet.tcp.syncookies=1; do
     sysctl -n "${_kv%%=*}" >/dev/null 2>&1 || continue
     set_conf /etc/sysctl.conf "$(echo "${_kv%%=*}" | sed 's/\./\\./g')" "$_kv" '[[:space:]]*='
     [ "$MODE" = apply ] && [ "$(sysctl -n "${_kv%%=*}")" != "${_kv#*=}" ] && run sysctl "$_kv"
@@ -545,6 +558,17 @@ sec_permissions() {
     _m=$(stat -f '%Lp' "$_h")
     case $_m in *0) result OK "$_h is private ($_m)" ;; *) fix "$_h: remove access for other users (was $_m)" chmod o-rwx "$_h" ;; esac
   done
+  info "World-writable files (anyone can change them)"
+  _l=$WORK_DIR/ww.txt
+  _mps=$(mount -p -t ufs,zfs,tmpfs 2>/dev/null | awk '{ print $2 }')
+  for _mp in ${_mps:-/}; do
+    find "$_mp" -xdev \( -path /tmp -o -path /var/tmp -o -path /dev -o -path /proc -o -path /var/run -o -path "$WORK_DIR" \) -prune -o -type f -perm -0002 -print 2>/dev/null
+  done | sort -u >"$_l"
+  if [ -s "$_l" ]; then
+    result REVIEW "$(wc -l <"$_l" | tr -d ' ') file(s) can be changed by ANY user"; show_file_list "$_l" 15
+    if ask "Remove 'everyone can write' from these files?" y; then fix "Removed world-write from the files listed in the report" sh -c "tr '\n' '\0' <'$_l' | xargs -0 chmod o-w"; fi
+  else result OK "No world-writable files"; fi
+  rm -f "$_l"
   info "Programs that run as root for any user (SUID/SGID)"
   _l=$WORK_DIR/suid.txt
   # every local disk file system (ZFS puts /home and each user's home on its own), never NFS or devfs
@@ -573,7 +597,7 @@ sec_sudo() {
       result REVIEW "$_f has NOPASSWD / !authenticate rules"
       if ask "Remove NOPASSWD and !authenticate from $_f?" y; then
         backup "$_f"
-        sed -i '' -E 's/NOPASSWD:[[:space:]]*//; /^[^#]*!authenticate/s/^/# /' "$_f"
+        sed -i '' -E 's/NOPASSWD:[[:space:]]*//g; /^[^#]*!authenticate/s/^/# /' "$_f"
         if run visudo -c; then result CHANGED "Removed NOPASSWD from $_f"; else restore "$_f"; result FAILED "visudo check failed - restored $_f"; fi
       fi
     else result OK "$_f has no NOPASSWD rules"; fi
@@ -596,7 +620,7 @@ sec_sudo() {
 # ============================================================================
 # SECTION: backdoors
 # ============================================================================
-SUSP='(\bnc\b|ncat|netcat|/dev/tcp|bash -i|sh -i|mkfifo|socat|(curl|fetch|wget)[^|]*\|[[:space:]]*(ba)?sh|base64 -d|b64decode|python[0-9.]* -c|perl -e|chmod [ugoa]*\+s|nohup)'
+SUSP='((^|[^[:alnum:]_])nc([^[:alnum:]_]|$)|ncat|netcat|/dev/tcp|bash -i|sh -i|mkfifo|socat|(curl|fetch|wget)[^|]*\|[[:space:]]*(ba)?sh|base64 -d|b64decode|python[0-9.]* -c|perl -e|chmod [ugoa]*\+s|nohup)'
 sec_backdoors() {
   info "Cron jobs"
   for _f in /var/cron/tabs/*; do
@@ -743,7 +767,7 @@ menu() {
     printf '%s  Choose: %s' "$YLW" "$RST"; read -r _c </dev/tty || break
     case $_c in
       q) break ;;
-      a) confirm_apply && for _s in $SECTIONS; do run_section "$_s"; done ;;
+      a) confirm_apply && for _s in ${ONLY:-$SECTIONS}; do run_section "$_s"; done ;;   # --only/--quick limit "all"
       m) if [ "$MODE" = audit ]; then MODE=apply; else MODE=audit; fi ;;
       *) confirm_apply && for _n in $_c; do _s=$(echo "$SECTIONS" | tr ' ' '\n' | sed -n "${_n}p"); [ -n "$_s" ] && run_section "$_s"; done ;;
     esac
@@ -754,13 +778,20 @@ START_TS=$(date +%s)
 while [ $# -gt 0 ]; do
   case $1 in
     --audit) MODE=audit ;; --apply) MODE=apply ;; -y|--yes) ASSUME_YES=1 ;;
-    --config) CONFIG_FILE=$2; shift ;; --only) ONLY=$2; shift ;;
-    --quick) ONLY='users passwords firewall ssh services software kernel sudo updates' ;;
+    --config|--only) [ $# -ge 2 ] || { echo "$1 needs a value (try --help)"; exit 1; }
+                     if [ "$1" = --config ]; then CONFIG_FILE=$2; else ONLY=$2; fi; shift ;;
+    --quick) QUICK=1 ;;
     --list) echo "$SECTIONS" | tr ' ' '\n'; exit 0 ;;
     -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
     *) echo "Unknown option $1 (try --help)"; exit 1 ;;
   esac
   shift
+done
+# --only beats --quick whatever the order; unknown names are rejected before anything runs
+[ -z "$ONLY" ] && [ "$QUICK" -eq 1 ] && ONLY='users passwords firewall ssh services software kernel sudo updates'
+ONLY=$(echo "$ONLY" | tr ',' ' ')
+for _s in $ONLY; do
+  case " $SECTIONS " in *" $_s "*) ;; *) echo "Unknown section '$_s' (see --list)"; exit 1 ;; esac
 done
 [ "$(id -u)" -eq 0 ] || { echo "Run this as root (use: su -)"; exit 1; }
 [ "$(uname -s)" = FreeBSD ] || { echo "This script is for FreeBSD. Use scripts/linux/harden.sh on Linux."; exit 1; }
@@ -773,7 +804,7 @@ if [ -n "$CONFIG_FILE" ]; then load_config "$CONFIG_FILE"; elif [ "$ASSUME_YES" 
 finalize_readme
 if [ -z "$MODE" ]; then MODE=audit; echo "  Starting in AUDIT mode (nothing changes). Use 'm' to switch to APPLY."; menu
 elif confirm_apply; then
-  for _s in $(echo "${ONLY:-$SECTIONS}" | tr ',' ' '); do run_section "$_s"; done
+  for _s in ${ONLY:-$SECTIONS}; do run_section "$_s"; done
 fi
 summary
 rm -f "$RESULTS_FILE"

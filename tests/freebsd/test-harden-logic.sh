@@ -15,7 +15,7 @@
 #
 #  This tests the script's decisions, not FreeBSD itself: the real commands
 #  still need a run on a FreeBSD 13 / 14 image.
-#  Needs: a POSIX sh, awk, sed, find, mktemp, GNU stat (/usr/bin/stat).
+#  Needs: a POSIX sh, awk, sed, find, mktemp, and /usr/bin/stat (GNU or BSD/macOS).
 #  As root it also mounts a small tmpfs to test the SUID scan across file
 #  systems; without that it skips that one check.
 # =============================================================================
@@ -68,8 +68,16 @@ mk logname 'echo "${FAKE_LOGNAME:-}"'
 mk id 'case $1 in -u) echo 0 ;; -Gn) awk -F: -v u="$2" "{ n = split(\$4, m, \",\"); for (i = 1; i <= n; i++) if (m[i] == u) print \$1 }" "$FR/etc/group" | tr "\n" " "; echo ;;
   *) grep -q "^$1:" "$FR/etc/passwd" ;; esac'
 mk stat '[ "$1" = -f ] || exec /usr/bin/stat "$@"
-m=$(/usr/bin/stat -c %a "$3"); m=$(printf "%04d" "$m"); L=$(printf "%o" "0${m#?}"); M=$(printf "%o" "0${m%???}")
-u=$(/usr/bin/stat -c %U "$3"); g=$(/usr/bin/stat -c %G "$3"); [ "$g" = root ] && g=wheel
+if m=$(/usr/bin/stat -c %a "$3" 2>/dev/null); then   # GNU stat (Linux)
+  u=$(/usr/bin/stat -c %U "$3"); g=$(/usr/bin/stat -c %G "$3")
+else                                                  # BSD stat (macOS): full mode in octal, e.g. 41777
+  m=$(/usr/bin/stat -f %p "$3"); m=${m#${m%????}}
+  u=$(/usr/bin/stat -f %Su "$3"); g=$(/usr/bin/stat -f %Sg "$3")
+  [ "$u" = "$(/usr/bin/id -un)" ] && u=root          # files made by this test belong to whoever runs it
+  [ "$g" = "$(/usr/bin/id -gn)" ] && g=root
+fi
+m=000$m; m=${m#${m%????}}; L=$(printf "%o" "0${m#?}"); M=$(printf "%o" "0${m%???}")
+[ "$g" = root ] && g=wheel
 printf "%s\n" "$2" | sed "s/%Mp/$M/g; s/%Lp/$L/g; s/%Su/$u/g; s/%Sg/$g/g"'
 PATH=$T/bin:$REALPATH; export PATH
 
@@ -120,7 +128,7 @@ check "never locks the user running the script"     '! called "pw lock carol"'
 
 echo "== users: toor already locked"
 for pwf in '*' '*LOCKED*$6$abc$def' '*LOCKED*'; do
-  reset_state; sed -i "s|^toor:[^:]*:|toor:$pwf:|" "$FR/etc/master.passwd"; finalize_readme >/dev/null; SECTION=users; sec_users >/dev/null 2>&1
+  reset_state; sed "s|^toor:[^:]*:|toor:$pwf:|" "$FR/etc/master.passwd" >"$T/mp.new"; cat "$T/mp.new" >"$FR/etc/master.passwd"; finalize_readme >/dev/null; SECTION=users; sec_users >/dev/null 2>&1
   check "toor '$pwf' counts as locked"              'result_has "OK|users|toor" && ! grep -q "toor" "$T/calls"'
 done
 
@@ -143,6 +151,22 @@ echo "== ssh: existing pf.conf without the anchor"
 reset_state; CRITICAL_SERVICES=ssh; MODE=audit; echo "sshd_enable=YES" >"$T/rc"; printf 'block in all\npass out all\n' >"$FR/etc/pf.conf"
 : >"$FR/etc/ssh/sshd_config"; SECTION=ssh; sec_ssh >/dev/null 2>&1
 check "reports the missing blacklistd anchor"        'result_has "REVIEW|ssh|.*blacklistd/\*"'
+
+echo "== set_conf: case-insensitive keys, new settings go before a Match line"
+reset_state; printf 'permitrootlogin yes\nMatch User bob\n  X11Forwarding yes\n' >"$FR/etc/ssh/sshd_config"
+set_conf "$FR/etc/ssh/sshd_config" PermitRootLogin "PermitRootLogin no" >/dev/null 2>&1
+set_conf "$FR/etc/ssh/sshd_config" MaxAuthTries "MaxAuthTries 4" >/dev/null 2>&1
+check "a lowercase planted line is replaced, not duplicated" '[ "$(grep -ic "^permitrootlogin" "$FR/etc/ssh/sshd_config")" = 1 ] && grep -qx "PermitRootLogin no" "$FR/etc/ssh/sshd_config"'
+check "a new setting lands before the Match line"            'awk "/^MaxAuthTries 4/{a=NR} /^Match/{m=NR} END{exit !(a && m && a < m)}" "$FR/etc/ssh/sshd_config"'
+set_conf "$FR/etc/ssh/sshd_config" MaxAuthTries "MaxAuthTries 4" >/dev/null 2>&1; cp "$FR/etc/ssh/sshd_config" "$T/sshd.once"
+set_conf "$FR/etc/ssh/sshd_config" MaxAuthTries "MaxAuthTries 4" >/dev/null 2>&1
+check "running it again changes nothing"                     'cmp -s "$T/sshd.once" "$FR/etc/ssh/sshd_config"'
+
+echo "== firewall: SSH on another port"
+reset_state; CRITICAL_SERVICES=ssh; printf 'Port 2222\n' >"$FR/etc/ssh/sshd_config"
+check "crit_ports uses the port from sshd_config"            'crit_ports | grep -qx "2222 *"'
+printf '#Port 22\n' >"$FR/etc/ssh/sshd_config"
+check "crit_ports falls back to 22"                          'crit_ports | grep -qx "22 *"'
 
 # --- services / logging -----------------------------------------------------
 echo "== services: syslogd -ss is applied now"
