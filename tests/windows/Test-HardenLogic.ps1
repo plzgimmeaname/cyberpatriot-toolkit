@@ -302,10 +302,11 @@ function Get-LocalUser { param([string]$Name) if ($Name) { $script:LocalUsers | 
 function Get-LocalGroup { }
 function Remove-LocalUser { }
 function Get-GroupMembers([string]$Group) {
-    if ($Group -ne 'Administrators') { return @() }
+    if ($Group -notin 'Administrators', 'Administratoren') { return @() }
     foreach ($n in 'alice', 'carol', 'mallory') { [pscustomobject]@{ Short = $n; Full = "PC\$n"; IsLocal = $true; Class = 'User' } }
 }
 $script:Removed = @()
+function Add-LocalGroupMember { }
 function Remove-GroupMember([string]$Group, [string]$Member) { $script:Removed += "$Group/$Member" }
 $script:AuthAdmins = @('alice'); $script:AuthUsers = @('carol'); $script:Me = 'carol'; $script:NewPassword = 'skip'
 $script:Mode = 'Apply'; $script:AssumeYes = $true; Reset-Results
@@ -323,6 +324,104 @@ $f1 = Join-Path $fdir 'song [remix].mp3'; $f2 = Join-Path $fdir 'plain.mp3'
 Remove-FileList @($f1, $f2)
 Assert 'Remove-FileList deletes "song [remix].mp3" (not treated as a wildcard)' {
     -not (Microsoft.PowerShell.Management\Test-Path -LiteralPath $f1) -and -not (Microsoft.PowerShell.Management\Test-Path -LiteralPath $f2) }
+
+
+# --- v2.1.0 additions ---------------------------------------------------------
+# Well-known groups are looked up by SID, so a German Windows ("Administratoren") works
+function Get-WellKnownName([string]$Sid, [string]$Default) { if ($Sid -eq 'S-1-5-32-544') { 'Administratoren' } elseif ($Sid -eq 'S-1-1-0') { 'Jeder' } else { $Default } }
+$script:Removed = @(); $script:Me = 'carol'; $script:AuthAdmins = @('alice'); $script:AuthUsers = @('carol'); Reset-Results
+Invoke-Users
+Assert 'Users: the Administrators group is found by SID (German name used for the removal)' { $script:Removed -contains 'Administratoren/PC\mallory' }
+# put the real function back
+. ([scriptblock]::Create(($ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq 'Get-WellKnownName' }, $false))[0].Extent.Text))
+Assert 'Get-WellKnownName falls back to the default when the SID cannot be translated' { (Get-WellKnownName 'S-1-5-32-544' 'Administrators') -in 'Administrators', 'Administratoren' -and (Get-WellKnownName 'not-a-sid' 'Fallback') -eq 'Fallback' }
+$script:Me = 'alice'
+
+# No README user list: powerful-group members are reported, never removed
+function Get-LocalGroup { [pscustomobject]@{ Name = 'x' } }
+function Get-GroupMembers([string]$Group) { if ($Group -eq 'Backup Operators') { [pscustomobject]@{ Short = 'mallory'; Full = 'PC\mallory'; IsLocal = $true; Class = 'User'; Sid = '' } } }
+$script:Removed = @(); $script:AuthAdmins = @('alice'); $script:AuthUsers = @(); $script:Me = 'alice'; Reset-Results
+Invoke-Users
+Assert 'Users: with no README user list, group members are reported but not removed' {
+    @($script:Results | Where-Object { $_.Status -eq 'REVIEW' -and $_.Text -like "*PC\mallory*Backup Operators*" }).Count -eq 1 -and $script:Removed.Count -eq 0 }
+function Get-LocalGroup { }
+
+# Self-elevation relaunch: every path quoted, every switch passed through
+$ra = Get-RelaunchArguments 'C:\My Tools\Harden.ps1' 'Apply' $true 'C:\My Files\readme config.psd1' @('users', 'passwords firewall') $true
+Assert 'Relaunch: script path and config path with spaces are quoted' { $ra -contains '"C:\My Tools\Harden.ps1"' -and $ra -contains '"C:\My Files\readme config.psd1"' }
+Assert 'Relaunch: -Mode, -Yes, -Quick are passed; -Only is one comma list' {
+    ($ra -join ' ') -like '*-Mode Apply*' -and $ra -contains '-Yes' -and $ra -contains '-Quick' -and $ra[$ra.IndexOf('-Only') + 1] -eq '"users,passwords,firewall"' }
+$ra2 = Get-RelaunchArguments 'C:\h.ps1' '' $false '' $null $false
+Assert 'Relaunch: unused switches are left out' { -not ($ra2 -contains '-Mode' -or $ra2 -contains '-Yes' -or $ra2 -contains '-Config' -or $ra2 -contains '-Only' -or $ra2 -contains '-Quick') }
+
+# Audit policy is read from the language-independent backup CSV
+function auditpol.exe {
+    $f = ($args | Where-Object { "$_" -like '/file:*' }) -replace '^/file:', ''
+    if ($args -contains '/backup') {
+        @('Machine Name,Policy Target,Subcategory,Subcategory GUID,Inclusion Setting,Exclusion Setting,Setting Value',
+          'PC,System,Anmelden,{0CCE9215-69AE-11D9-BED3-505054503030},Erfolg und Fehler,,3',
+          'PC,System,Abmelden,{0CCE9216-69AE-11D9-BED3-505054503030},Erfolg,,1',
+          'PC,System,Kontosperrung,{0CCE9217-69AE-11D9-BED3-505054503030},Keine Überwachung,,0') | Set-Content -Path $f
+    }
+}
+$ar = @(Get-AuditPolicyRows)
+Assert 'Audit policy: 3 subcategories read by GUID even with German text' { $ar.Count -eq 3 -and $ar[0].Guid -eq '{0CCE9215-69AE-11D9-BED3-505054503030}' }
+Assert 'Audit policy: only the success+failure row (value 3) is complete' { @($ar | Where-Object { $_.Value -ne 3 }).Count -eq 2 }
+Remove-Item Function:\auditpol.exe
+
+# secedit is exported once per section, not once per check
+$script:ExportCount = 0
+$secOrig = ${function:secedit.exe}
+function secedit.exe { if ($args -contains '/export') { $script:ExportCount++ }; & $secOrig @args }
+$script:SecCache = $null; $script:Mode = 'Audit'; Reset-Results
+Invoke-UserRights; Invoke-UserRights
+Assert 'secedit: two reads in one section cost one export (cached)' { $script:ExportCount -eq 1 }
+$script:ExportCount = 0; $script:SecCache = $null; $script:Mode = 'Apply'; $script:AssumeYes = $true
+Set-SecPolicy 'System Access' ([ordered]@{ MinimumPasswordLength = 14 }) 'SECURITYPOLICY' 'test' | Out-Null
+Assert 'secedit: after an apply the cache is refreshed and shows the new value' { (Get-SecPolicyCached)['System Access']['MinimumPasswordLength'] -eq '14' }
+$script:SecCache = $null
+$script:FakePolicy['System Access']['MinimumPasswordLength'] = '12'
+Remove-Item Function:\secedit.exe
+function secedit.exe { & $secOrig @args }
+
+# Scheduled tasks: Microsoft's own .vbs/.bat tasks are not "suspicious", planted ones are
+Assert 'Task: Server Manager CleanupOldPerfLogs (cscript .vbs in System32) is not suspicious' {
+    -not (Test-SuspiciousTask '\Microsoft\Windows\Server Manager\' '%systemroot%\system32\cscript.exe /B /nologo %systemroot%\system32\calluxxprovider.vbs $(Arg0)') }
+Assert 'Task: a task hidden under \Microsoft\ that runs from C:\Windows\Temp is suspicious' {
+    Test-SuspiciousTask '\Microsoft\Windows\Foo\' 'C:\Windows\Temp\run.bat' }
+Assert 'Task: a .ps1 task outside \Microsoft\ is suspicious' { Test-SuspiciousTask '\' 'powershell.exe -ep bypass -File C:\Users\Public\a.ps1' }
+
+# Firewall: README ports are opened BEFORE the profiles are switched on (a Remote Desktop session would otherwise be cut)
+$script:Order = @()
+function Get-NetFirewallProfile { @([pscustomobject]@{ Name = 'Domain'; Enabled = 'False'; DefaultInboundAction = 'Block'; DefaultOutboundAction = 'Allow'; LogBlocked = 'True'; NotifyOnListen = 'True' }) }
+function Set-NetFirewallProfile { $script:Order += 'profile' }
+function Get-NetFirewallRule { param($DisplayGroup, $Name, $Direction, $Action, $Enabled)
+    if ($Name -eq 'RemoteDesktop-UserMode-In-TCP') { [pscustomobject]@{ Name = 'RemoteDesktop-UserMode-In-TCP'; Enabled = 'False'; DisplayGroup = 'Bureau a distance' } } }
+function Enable-NetFirewallRule { $script:Order += 'rule:' + (@($args | ForEach-Object { $_ }) -join ',') }
+Reset-Reg; Reset-Results; $script:Mode = 'Apply'; $script:Critical = @('rdp'); Invoke-Firewall
+Assert 'Firewall: the Remote Desktop rule is found by its language-independent name' { ($script:Order -join ' ') -like '*rule:*RemoteDesktop-UserMode-In-TCP*' }
+Assert 'Firewall: critical rules are enabled before the profile is turned on' { $script:Order.Count -ge 2 -and $script:Order[0] -like 'rule:*' -and $script:Order[1] -eq 'profile' }
+$script:Critical = @()
+
+# Remote Desktop: never switch it off from inside an RDP session without an explicit yes
+$ts = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server'
+$savedSession = $env:SESSIONNAME
+$env:SESSIONNAME = 'RDP-Tcp#3'; Reset-Reg; Reset-Results; $script:AssumeYes = $true; $script:Mode = 'Apply'; $script:Critical = @()
+Set-FakeReg $ts 'fDenyTSConnections' 0
+Invoke-RemoteAccess
+Assert 'RDP: with -Yes inside an RDP session, Remote Desktop is NOT turned off' { $script:FakeReg[$ts]['fDenyTSConnections'] -eq 0 -and @($script:Results | Where-Object { $_.Status -eq 'REVIEW' -and $_.Text -like '*connected through Remote Desktop*' }).Count -eq 1 }
+$env:SESSIONNAME = 'Console'; Reset-Reg; Reset-Results
+Set-FakeReg $ts 'fDenyTSConnections' 0
+Invoke-RemoteAccess
+Assert 'RDP: from the console, with -Yes and not in the README, it is turned off' { $script:FakeReg[$ts]['fDenyTSConnections'] -eq 1 }
+$env:SESSIONNAME = $savedSession
+
+# One-pass file walker: finds nested files, skips excluded folders and (on any OS) does not loop
+$wroot = Join-Path $tmp 'walk'
+foreach ($d in 'a/b', 'AppData/Local/Microsoft/x', 'keep') { Microsoft.PowerShell.Management\New-Item -ItemType Directory -Path (Join-Path $wroot $d) -Force | Out-Null }
+foreach ($f in 'top.mp3', 'a/b/deep.mp3', 'AppData/Local/Microsoft/x/skip.mp3', 'keep/k.txt') { [IO.File]::WriteAllText((Join-Path $wroot $f), 'x') }
+$walked = @(Get-FilesOnePass @($wroot) '(?i)\\AppData\\Local\\Microsoft\\|/AppData/Local/Microsoft/' | ForEach-Object { $_.Name } | Sort-Object)
+Assert 'Get-FilesOnePass: finds nested files and skips the excluded folder' { ($walked -join ',') -eq 'deep.mp3,k.txt,top.mp3' }
 
 Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
 [Console]::WriteLine('')

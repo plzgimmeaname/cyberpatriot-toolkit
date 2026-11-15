@@ -47,7 +47,7 @@ param(
     [switch]$Quick
 )
 
-$ScriptVersion = '2.0.0'
+$ScriptVersion = '2.1.0'
 $script:StartTime = Get-Date
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
@@ -90,16 +90,26 @@ if ($List) {
 # ---------------------------------------------------------------------------
 # Must run as Administrator
 # ---------------------------------------------------------------------------
+# Start-Process joins -ArgumentList with spaces and adds no quotes, so every path is quoted here
+function Get-RelaunchArguments([string]$ScriptPath, [string]$Mode, [bool]$Yes, [string]$Config, [string[]]$Only, [bool]$Quick) {
+    $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-NoExit', '-File', "`"$ScriptPath`"")
+    if ($Mode)   { $a += @('-Mode', $Mode) }
+    if ($Yes)    { $a += '-Yes' }
+    if ($Config) { $a += @('-Config', "`"$Config`"") }
+    if ($Only)   { $a += @('-Only', ('"' + (@($Only -join ',' -split '[\s,]+' | Where-Object { $_ }) -join ',') + '"')) }
+    if ($Quick)  { $a += '-Quick' }
+    return $a
+}
+
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    if (-not $PSCommandPath) { Write-Host 'This script must run as Administrator: open PowerShell with "Run as administrator" and start it again.' -ForegroundColor Red; return }
     Write-Host 'This script must run as Administrator. Opening an elevated window...' -ForegroundColor Yellow
-    $relaunch = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-NoExit', '-File', "`"$PSCommandPath`"")
-    if ($Mode)   { $relaunch += @('-Mode', $Mode) }
-    if ($Yes)    { $relaunch += '-Yes' }
-    if ($Config) { $relaunch += @('-Config', "`"$((Resolve-Path $Config).Path)`"") }
-    if ($Only)   { $relaunch += @('-Only', ($Only -join ',')) }
-    if ($Quick)  { $relaunch += '-Quick' }
-    Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $relaunch
+    $cfgFull = $Config
+    if ($Config) { try { $cfgFull = (Resolve-Path -LiteralPath $Config -ErrorAction Stop).ProviderPath } catch { Write-Host "Config file not found: $Config" -ForegroundColor Red; return } }
+    $relaunch = Get-RelaunchArguments $PSCommandPath $Mode ([bool]$Yes) $cfgFull $Only ([bool]$Quick)
+    try { Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $relaunch -ErrorAction Stop }
+    catch { Write-Host "Could not open an elevated window ($($_.Exception.Message)). Open PowerShell with 'Run as administrator' and start the script again." -ForegroundColor Red }
     return
 }
 
@@ -126,6 +136,7 @@ New-Item -ItemType Directory -Path $BackupDir -Force | Out-Null
 $script:Results = New-Object System.Collections.Generic.List[object]
 $script:CurrentSection = 'setup'
 $script:BackedUpKeys = @{}
+$script:SecCache = $null
 $script:Me = $env:USERNAME
 
 # ---------------------------------------------------------------------------
@@ -270,6 +281,12 @@ function Get-SecPolicy {
     return $policy
 }
 
+# One export per section is enough: the policy only changes when Set-SecPolicy applies something (which refreshes the cache)
+function Get-SecPolicyCached {
+    if (-not $script:SecCache) { $script:SecCache = Get-SecPolicy }
+    return $script:SecCache
+}
+
 function Backup-SecPolicy {
     $file = Join-Path $BackupDir 'secpol-before.inf'
     if (-not (Test-Path $file)) { & secedit.exe /export /cfg $file /quiet 2>&1 | Out-Null }
@@ -278,7 +295,7 @@ function Backup-SecPolicy {
 # Set-SecPolicy SECTION @{key=value} AREA "description"
 #   Compares wanted values with the current policy and applies only the differences.
 function Set-SecPolicy([string]$Section, [System.Collections.IDictionary]$Wanted, [string]$Area, [string]$Description) {
-    $current = Get-SecPolicy
+    $current = Get-SecPolicyCached
     $cur = if ($current.ContainsKey($Section)) { $current[$Section] } else { @{} }
     $diff = [ordered]@{}
     # secedit /export leaves out a right that nobody holds, so "missing" counts as "" (No One)
@@ -302,7 +319,8 @@ function Set-SecPolicy([string]$Section, [System.Collections.IDictionary]$Wanted
     $out = & secedit.exe /configure /db $db /cfg $inf /areas $Area /quiet 2>&1
     Write-HardenLog ($out | Out-String)
     Remove-Item $inf, $db -Force -ErrorAction SilentlyContinue
-    $after = Get-SecPolicy
+    $script:SecCache = Get-SecPolicy
+    $after = $script:SecCache
     $still = @($diff.Keys | Where-Object {
         $now = if ($after.ContainsKey($Section) -and $after[$Section].Contains($_)) { "$($after[$Section][$_])" } elseif ("$($diff[$_])" -eq '') { '' } else { $null }
         $now -ne "$($diff[$_])" })
@@ -420,12 +438,18 @@ function Get-NewPasswordPlain {
 # ===========================================================================
 # SECTION: Users and groups
 # ===========================================================================
+# Group and account names are translated on non-English Windows ("Administrators" is "Administratoren" in German), so
+# well-known groups are found by SID. $Default is only used if the SID cannot be translated.
+function Get-WellKnownName([string]$Sid, [string]$Default) {
+    try { return (([System.Security.Principal.SecurityIdentifier]$Sid).Translate([System.Security.Principal.NTAccount]).Value -split '\\')[-1] } catch { return $Default }
+}
+
 function Get-GroupMembers([string]$Group) {
-    # Returns objects: Short (name only), Full (DOMAIN\name), IsLocal, Class
+    # Returns objects: Short (name only), Full (DOMAIN\name), IsLocal, Class, Sid
     $result = @()
     try {
         foreach ($m in @(Get-LocalGroupMember -Group $Group -ErrorAction Stop)) {
-            $result += [pscustomobject]@{ Short = ($m.Name -split '\\')[-1]; Full = $m.Name; IsLocal = ($m.PrincipalSource -eq 'Local' -or $m.Name -like "$env:COMPUTERNAME\*"); Class = $m.ObjectClass }
+            $result += [pscustomobject]@{ Short = ($m.Name -split '\\')[-1]; Full = $m.Name; IsLocal = ($m.PrincipalSource -eq 'Local' -or $m.Name -like "$env:COMPUTERNAME\*"); Class = $m.ObjectClass; Sid = "$($m.SID.Value)" }
         }
         return $result
     } catch {
@@ -437,7 +461,7 @@ function Get-GroupMembers([string]$Group) {
             if ($line -match '^The command completed') { break }
             if ($inList -and $line.Trim()) {
                 $full = $line.Trim()
-                $result += [pscustomobject]@{ Short = ($full -split '\\')[-1]; Full = $full; IsLocal = ($full -notmatch '\\' -or $full -like "$env:COMPUTERNAME\*"); Class = 'Unknown' }
+                $result += [pscustomobject]@{ Short = ($full -split '\\')[-1]; Full = $full; IsLocal = ($full -notmatch '\\' -or $full -like "$env:COMPUTERNAME\*"); Class = 'Unknown'; Sid = '' }
             }
         }
         return $result
@@ -479,7 +503,7 @@ function Invoke-Users {
                 $newName = $name
                 Invoke-Fix "Created user $newName" {
                     New-LocalUser -Name $newName -Password (ConvertTo-SecureString $pw -AsPlainText -Force) -ErrorAction Stop | Out-Null
-                    Add-LocalGroupMember -Group 'Users' -Member $newName -ErrorAction SilentlyContinue
+                    Add-LocalGroupMember -Group (Get-WellKnownName 'S-1-5-32-545' 'Users') -Member $newName -ErrorAction SilentlyContinue
                 } | Out-Null
             }
         }
@@ -512,37 +536,43 @@ function Invoke-Users {
 
     Write-Info 'Checking who is an Administrator'
     Write-Why 'Only the README administrators should have admin rights.'
-    $admins = Get-GroupMembers 'Administrators'
+    $adminGroup = Get-WellKnownName 'S-1-5-32-544' 'Administrators'
+    $admins = Get-GroupMembers $adminGroup
     foreach ($m in $admins) {
         if ($builtinAdmin -and $m.Short -eq $builtinAdmin.Name) { continue }
-        if ($m.Short -in @('Domain Admins', 'Enterprise Admins')) { continue }
+        if ($m.Short -in @('Domain Admins', 'Enterprise Admins') -or $m.Sid -match '^S-1-5-21-[\d-]+-(512|519)$') { continue }
         if ($script:AuthAdmins -contains $m.Short) { continue }
         if ($m.Short -eq $script:Me) { Add-Result 'REVIEW' "You ($($m.Full)) are an Administrator but the README list has you as a normal user - not removing you (you would lose admin rights). Check the README."; continue }
         if (-not (Test-HaveUserList)) { Add-Result 'REVIEW' "'$($m.Full)' is an Administrator (no README list to compare)"; continue }
         Add-Result 'REVIEW' "'$($m.Full)' is an Administrator but NOT an authorized admin"
         if (Confirm-Step "Remove '$($m.Full)' from Administrators?" 'y') {
             $who = $m.Full
-            Invoke-Fix "Removed $who from Administrators" { Remove-GroupMember 'Administrators' $who } | Out-Null
+            Invoke-Fix "Removed $who from Administrators" { Remove-GroupMember $adminGroup $who } | Out-Null
         }
     }
     foreach ($a in $script:AuthAdmins) {
         if (-not (Get-LocalUser -Name $a -ErrorAction SilentlyContinue)) { continue }
         if (@($admins.Short) -contains $a) { Add-Result 'OK' "$a is an Administrator"; continue }
         Add-Result 'REVIEW' "Authorized admin '$a' is not in the Administrators group"
-        if (Confirm-Step "Add '$a' to Administrators?" 'y') { $who = $a; Invoke-Fix "Added $who to Administrators" { Add-LocalGroupMember -Group 'Administrators' -Member $who -ErrorAction Stop } | Out-Null }
+        if (Confirm-Step "Add '$a' to Administrators?" 'y') { $who = $a; Invoke-Fix "Added $who to Administrators" { Add-LocalGroupMember -Group $adminGroup -Member $who -ErrorAction Stop } | Out-Null }
     }
 
     Write-Info 'Checking other powerful groups'
     Write-Why 'Backup Operators can read any file, Power Users and Hyper-V Administrators can take over the computer.'
     $rdpCritical = Test-Critical @('rdp', 'remotedesktop', 'remote-desktop', 'termservice')
-    foreach ($g in @('Backup Operators', 'Power Users', 'Hyper-V Administrators', 'Remote Management Users', 'Network Configuration Operators', 'Cryptographic Operators', 'Distributed COM Users', 'Event Log Readers', 'Remote Desktop Users')) {
+    $powerGroups = [ordered]@{ 'S-1-5-32-551' = 'Backup Operators'; 'S-1-5-32-547' = 'Power Users'; 'S-1-5-32-578' = 'Hyper-V Administrators'; 'S-1-5-32-580' = 'Remote Management Users'
+                               'S-1-5-32-556' = 'Network Configuration Operators'; 'S-1-5-32-569' = 'Cryptographic Operators'; 'S-1-5-32-562' = 'Distributed COM Users'
+                               'S-1-5-32-573' = 'Event Log Readers'; 'S-1-5-32-555' = 'Remote Desktop Users' }
+    foreach ($gsid in $powerGroups.Keys) {
+        $g = Get-WellKnownName $gsid $powerGroups[$gsid]
         if (-not (Get-LocalGroup -Name $g -ErrorAction SilentlyContinue)) { continue }
         foreach ($m in (Get-GroupMembers $g)) {
             if ($script:AuthAdmins -contains $m.Short) { continue }
             $default = 'y'
-            if ($g -eq 'Remote Desktop Users' -and $rdpCritical -and (Test-Authorized $m.Short)) { $default = 'n' }
+            if ($gsid -eq 'S-1-5-32-555' -and $rdpCritical -and (Test-Authorized $m.Short)) { $default = 'n' }
             Add-Result 'REVIEW' "'$($m.Full)' is in the '$g' group"
-            if (Confirm-Step "Remove '$($m.Full)' from '$g'?" $default) {
+            # Like every other removal: report only when the README gave no user list
+            if ((Test-HaveUserList) -and (Confirm-Step "Remove '$($m.Full)' from '$g'?" $default)) {
                 $who = $m.Full; $grp = $g
                 Invoke-Fix "Removed $who from $grp" { Remove-GroupMember $grp $who } | Out-Null
             }
@@ -582,7 +612,7 @@ function Invoke-UsersAD {
         Add-Result 'SKIPPED' 'No README user list given - cannot tell which users are unauthorized'
     } else {
         foreach ($u in $all) {
-            if ($builtin -contains $u.SamAccountName) { continue }
+            if ($builtin -contains $u.SamAccountName -or "$($u.SID.Value)" -match '-(500|501|502|503)$' -or $u.SamAccountName.EndsWith('$')) { continue }
             if (Test-Authorized $u.SamAccountName) { continue }
             Add-Result 'REVIEW' "Domain user '$($u.SamAccountName)' is NOT in the README"
             if (Confirm-Step "Delete domain user '$($u.SamAccountName)'?" 'y') {
@@ -601,8 +631,8 @@ function Invoke-UsersAD {
             }
         }
     }
-    $guest = Get-ADUser -Identity 'Guest' -ErrorAction SilentlyContinue
-    if ($guest -and $guest.Enabled) { Invoke-Fix 'Disabled the domain Guest account' { Disable-ADAccount -Identity 'Guest' -ErrorAction Stop } | Out-Null }
+    $guest = $all | Where-Object { "$($_.SID.Value)" -match '-501$' } | Select-Object -First 1
+    if ($guest -and $guest.Enabled) { $gdn = $guest.DistinguishedName; Invoke-Fix 'Disabled the domain Guest account' { Disable-ADAccount -Identity $gdn -ErrorAction Stop } | Out-Null }
     elseif ($guest) { Add-Result 'OK' 'Domain Guest account is disabled' }
 
     Write-Info 'Checking powerful domain groups'
@@ -611,7 +641,7 @@ function Invoke-UsersAD {
     foreach ($g in $groups) {
         $members = @(Get-ADGroupMember -Identity $g -ErrorAction SilentlyContinue | Where-Object { $_.objectClass -eq 'user' })
         foreach ($m in $members) {
-            if ($m.SamAccountName -eq 'Administrator' -or $script:AuthAdmins -contains $m.SamAccountName) { continue }
+            if ($m.SamAccountName -eq 'Administrator' -or "$($m.SID.Value)" -match '-500$' -or $script:AuthAdmins -contains $m.SamAccountName) { continue }
             if ($m.SamAccountName -eq $script:Me) { Add-Result 'REVIEW' "You ($($m.SamAccountName)) are in '$g' but the README list has you as a normal user - not removing you. Check the README."; continue }
             if (-not (Test-HaveUserList)) { Add-Result 'REVIEW' "'$($m.SamAccountName)' is in '$g' (no README list to compare)"; continue }
             Add-Result 'REVIEW' "'$($m.SamAccountName)' is in '$g' but is NOT an authorized admin"
@@ -764,6 +794,8 @@ function Invoke-SecurityOptions {
     Set-Reg $sys 'DisableCAD' 0 'DWord' 'Ctrl+Alt+Del is required to log on'
     Set-Reg $sys 'InactivityTimeoutSecs' 900 'DWord' 'Computer locks after 15 idle minutes'
     Set-Reg $sys 'ShutdownWithoutLogon' 0 'DWord' 'Cannot shut down from the logon screen without logging in'
+    Set-Reg $sys 'DontDisplayLockedUserId' 3 'DWord' "Locked screen doesn't show the user's name or account details"
+    Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\CredUI' 'EnumerateAdministrators' 0 'DWord' "Elevation prompts don't list administrator accounts"
     if (-not (Get-RegValue $sys 'LegalNoticeText')) {
         Set-Reg $sys 'LegalNoticeCaption' 'Authorized use only' 'String' 'Logon warning title'
         Set-Reg $sys 'LegalNoticeText' 'This computer is for authorized users only. Activity may be monitored and reported.' 'String' 'Logon warning text'
@@ -799,6 +831,7 @@ function Invoke-SecurityOptions {
     Set-Reg $srv 'EnableSecuritySignature' 1 'DWord' 'SMB server: sign if the client agrees'
     Set-Reg $srv 'RestrictNullSessAccess' 1 'DWord' 'SMB server: no anonymous (null session) access'
     Set-Reg $srv 'EnableForcedLogOff' 1 'DWord' 'SMB server: disconnect users when logon hours expire'
+    Set-Reg $srv 'autodisconnect' 15 'DWord' 'SMB server: disconnect idle sessions after 15 minutes'
     if (-not $script:IsDC) {
         Set-Reg $srv 'NullSessionPipes' ([string[]]@()) 'MultiString' 'SMB server: no pipes open to anonymous users'
         Set-Reg $srv 'NullSessionShares' ([string[]]@()) 'MultiString' 'SMB server: no shares open to anonymous users'
@@ -850,7 +883,7 @@ function Invoke-UserRights {
     Write-Info 'Who is allowed to do powerful things (debug programs, act as the OS, take ownership...)'
     Write-Why "Rights like 'Debug programs' given to Everyone or a normal user let them take over the computer."
     if ($script:IsDC) { Add-Result 'REVIEW' 'On a Domain Controller, user rights also come from the Default Domain Controllers Policy - check it in Group Policy Management' }
-    $policy = Get-SecPolicy
+    $policy = Get-SecPolicyCached
     $pr = if ($policy.ContainsKey('Privilege Rights')) { $policy['Privilege Rights'] } else { @{} }
     $badPrincipals = @('*S-1-1-0', '*S-1-5-32-545', '*S-1-5-32-546', '*S-1-5-11', '*S-1-5-7', '*S-1-5-4', '*S-1-5-32-547')
     $dangerous = @('SeTcbPrivilege', 'SeDebugPrivilege', 'SeTakeOwnershipPrivilege', 'SeLoadDriverPrivilege', 'SeBackupPrivilege', 'SeRestorePrivilege',
@@ -906,6 +939,22 @@ function Invoke-UserRights {
 # ===========================================================================
 # SECTION: Audit policy and event logs
 # ===========================================================================
+# auditpol /get prints localized subcategory names and settings ("Erfolg und Fehler"), so read the backup CSV instead:
+# its last column is a number (1 = success, 2 = failure, 3 = both) and it has the subcategory GUID.
+function Get-AuditPolicyRows {
+    $file = Join-Path $env:TEMP "harden-audit-$RunId.csv"
+    try {
+        Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue
+        & auditpol.exe /backup "/file:$file" 2>&1 | Out-Null
+        if (-not (Test-Path -LiteralPath $file)) { return @() }
+        $names = 'Machine', 'Target', 'Subcategory', 'Guid', 'Inclusion', 'Exclusion', 'Value'
+        $out = @(Get-Content -LiteralPath $file | Select-Object -Skip 1 | ConvertFrom-Csv -Header $names | Where-Object { $_.Guid -match '^\{[0-9A-Fa-f-]{36}\}$' -and "$($_.Value)" -match '^\d+$' } |
+                 ForEach-Object { [pscustomobject]@{ Name = $_.Subcategory; Guid = $_.Guid; Value = [int]$_.Value } })
+        Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue
+        return $out
+    } catch { Write-HardenLog "skipped: $($_.Exception.Message)"; return @() }
+}
+
 function Invoke-AuditPolicy {
     Write-Info 'Audit policy (what Windows writes to the Security event log)'
     Write-Why 'Without auditing there is no record of logins, account changes or policy changes.'
@@ -913,9 +962,8 @@ function Invoke-AuditPolicy {
     $legacy = [ordered]@{ AuditSystemEvents = 3; AuditLogonEvents = 3; AuditObjectAccess = 3; AuditPrivilegeUse = 3; AuditPolicyChange = 3
                           AuditAccountManage = 3; AuditProcessTracking = 3; AuditDSAccess = 3; AuditAccountLogon = 3 }
     Set-SecPolicy 'Event Audit' $legacy 'SECURITYPOLICY' 'Basic audit policy: success and failure for every category' | Out-Null
-    $rows = @()
-    try { $rows = @(& auditpol.exe /get /category:* /r | Where-Object { $_.Trim() } | ConvertFrom-Csv | Where-Object { $_.Subcategory }) } catch { Write-HardenLog "skipped: $($_.Exception.Message)" }
-    $weak = @($rows | Where-Object { $_.'Inclusion Setting' -ne 'Success and Failure' })
+    $rows = @(Get-AuditPolicyRows)
+    $weak = @($rows | Where-Object { $_.Value -ne 3 })
     if ($rows.Count -eq 0) { Add-Result 'FAILED' 'Could not read the audit policy (auditpol)' }
     elseif ($weak.Count -eq 0) { Add-Result 'OK' 'Every audit subcategory records success and failure' }
     else {
@@ -981,7 +1029,7 @@ function Invoke-Defender {
     }
     if ($svc.Status -ne 'Running') { Invoke-Fix 'Start the Defender service' { Start-Service WinDefend -ErrorAction Stop } | Out-Null }
     $mp = $null
-    try { $mp = Get-MpPreference -ErrorAction Stop } catch { Add-Result 'FAILED' "Cannot read Defender settings - $($_.Exception.Message)"; return }
+    try { $mp = Get-MpPreference -ErrorAction Stop } catch { Add-Result 'REVIEW' "Cannot read Defender settings (another antivirus may be in charge, or Defender is turned off by policy) - $($_.Exception.Message)"; return }
     $want = [ordered]@{
         DisableRealtimeMonitoring = $false; DisableBehaviorMonitoring = $false; DisableIOAVProtection = $false
         DisableScriptScanning = $false; DisableBlockAtFirstSeen = $false; DisableArchiveScanning = $false
@@ -1029,18 +1077,35 @@ function Invoke-Defender {
 # SECTION: Windows Firewall
 # ===========================================================================
 $FirewallGroupsForCritical = @(
-    @{ Keys = @('rdp', 'remotedesktop', 'remote-desktop', 'termservice'); Group = 'Remote Desktop' }
+    @{ Keys = @('rdp', 'remotedesktop', 'remote-desktop', 'termservice'); Group = 'Remote Desktop'; Names = @('RemoteDesktop-UserMode-In-TCP', 'RemoteDesktop-UserMode-In-UDP') }
     @{ Keys = @('iis', 'web', 'http', 'https', 'w3svc', 'webserver'); Group = 'World Wide Web Services (HTTP)' }
     @{ Keys = @('iis', 'web', 'https', 'webserver'); Group = 'Secure World Wide Web Services (HTTPS)' }
     @{ Keys = @('ftp', 'ftpsvc'); Group = 'FTP Server' }
-    @{ Keys = @('smb', 'fileshare', 'file-sharing', 'filesharing', 'print', 'spooler'); Group = 'File and Printer Sharing' }
+    @{ Keys = @('smb', 'fileshare', 'file-sharing', 'filesharing', 'print', 'spooler'); Group = 'File and Printer Sharing'; Names = @('FPS-SMB-In-TCP') }
     @{ Keys = @('dns'); Group = 'DNS Service' }
     @{ Keys = @('dhcp'); Group = 'DHCP Server' }
     @{ Keys = @('ad', 'activedirectory', 'ad-ds', 'adds', 'ldap', 'domain'); Group = 'Active Directory Domain Services' }
-    @{ Keys = @('winrm', 'remoting', 'powershell-remoting'); Group = 'Windows Remote Management' }
+    @{ Keys = @('winrm', 'remoting', 'powershell-remoting'); Group = 'Windows Remote Management'; Names = @('WINRM-HTTP-In-TCP', 'WINRM-HTTP-In-TCP-NoScope') }
 )
 
+# Display groups are translated ("Remote Desktop" is "Bureau a distance" in French); rule names are not, so both are tried
+function Get-InboundRulesFor($Entry) {
+    $found = @(Get-NetFirewallRule -DisplayGroup $Entry.Group -Direction Inbound -ErrorAction SilentlyContinue)
+    foreach ($n in @($Entry.Names)) { if ($n) { $found += @(Get-NetFirewallRule -Name $n -Direction Inbound -ErrorAction SilentlyContinue) } }
+    return @($found | Group-Object Name | ForEach-Object { $_.Group[0] })
+}
+
 function Invoke-Firewall {
+    Write-Info 'Firewall rules for critical services (opened BEFORE the firewall is switched on)'
+    foreach ($entry in $FirewallGroupsForCritical) {
+        if (-not (Test-Critical $entry.Keys)) { continue }
+        $grp = $entry.Group
+        $rules = @(Get-InboundRulesFor $entry)
+        if ($rules.Count -eq 0) { continue }
+        if (@($rules | Where-Object { "$($_.Enabled)" -eq 'True' }).Count -gt 0) { Add-Result 'OK' "Inbound rules for '$grp' are enabled (critical service)" }
+        else { $names = @($rules | ForEach-Object { $_.Name }); Invoke-Fix "Enable firewall rules for '$grp' (critical service)" { Enable-NetFirewallRule -Name $names -ErrorAction Stop } | Out-Null }
+    }
+
     Write-Info 'Firewall on for every network type'
     Write-Why 'The firewall blocks network connections you did not ask for.'
     $polBase = 'HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall'
@@ -1068,16 +1133,6 @@ function Invoke-Firewall {
         if ("$($prof.NotifyOnListen)" -ne 'True') {
             Invoke-Fix "$n firewall: tell the user when a program is blocked" { Set-NetFirewallProfile -Name $n -NotifyOnListen True -ErrorAction Stop } | Out-Null
         }
-    }
-
-    Write-Info 'Firewall rules for critical services'
-    foreach ($entry in $FirewallGroupsForCritical) {
-        if (-not (Test-Critical $entry.Keys)) { continue }
-        $grp = $entry.Group
-        $rules = @(Get-NetFirewallRule -DisplayGroup $grp -Direction Inbound -ErrorAction SilentlyContinue)
-        if ($rules.Count -eq 0) { continue }
-        if (@($rules | Where-Object { "$($_.Enabled)" -eq 'True' }).Count -gt 0) { Add-Result 'OK' "Inbound rules for '$grp' are enabled (critical service)" }
-        else { Invoke-Fix "Enable firewall rules for '$grp' (critical service)" { Enable-NetFirewallRule -DisplayGroup $grp -ErrorAction Stop } | Out-Null }
     }
 
     Write-Info 'Custom inbound "allow" rules (an attacker may have opened a port)'
@@ -1110,6 +1165,9 @@ $ServiceCatalog = @(
     @{ Name = 'SNMPTRAP';       Keys = @('snmp');                           Kind = 'bad';         Label = 'SNMP Trap' }
     @{ Name = 'simptcp';        Keys = @('simptcp');                        Kind = 'bad';         Label = 'Simple TCP/IP services' }
     @{ Name = 'Fax';            Keys = @('fax');                            Kind = 'bad';         Label = 'Fax' }
+    @{ Name = 'RpcLocator';     Keys = @('rpclocator');                     Kind = 'bad';         Label = 'Remote Procedure Call (RPC) Locator' }
+    @{ Name = 'lltdsvc';        Keys = @('lltd');                           Kind = 'situational'; Label = 'Link-Layer Topology Discovery Mapper' }
+    @{ Name = 'Browser';        Keys = @('smb', 'fileshare', 'file-sharing', 'filesharing', 'browser'); Kind = 'situational'; Label = 'Computer Browser' }
     @{ Name = 'SSDPSRV';        Keys = @('ssdp', 'upnp');                   Kind = 'situational'; Label = 'SSDP Discovery' }
     @{ Name = 'upnphost';       Keys = @('upnp');                           Kind = 'situational'; Label = 'UPnP Device Host' }
     @{ Name = 'SharedAccess';   Keys = @('ics', 'internet-connection-sharing'); Kind = 'situational'; Label = 'Internet Connection Sharing' }
@@ -1287,9 +1345,12 @@ function Invoke-RemoteAccess {
         if ($polDeny -eq 0) { Add-Result 'REVIEW' "Group Policy turns Remote Desktop ON, which beats the normal setting. If the README doesn't need it: Remove-ItemProperty -Path '$tsPol' -Name fDenyTSConnections" }
         if ((Get-RegValue $ts 'fDenyTSConnections') -ne 1) {
             Add-Result 'REVIEW' 'Remote Desktop is ON but the README does not list it'
-            if (Confirm-Step 'Turn off Remote Desktop?' 'y') {
+            # Never cut the branch you are sitting on: if this window is itself a Remote Desktop session, only turn it off when asked explicitly
+            $inRdp = ($env:SESSIONNAME -like 'RDP-*')
+            if ($inRdp) { Add-Result 'REVIEW' 'You are connected through Remote Desktop right now - turning it off would disconnect you' }
+            if (Confirm-Step 'Turn off Remote Desktop?' $(if ($inRdp) { 'n' } else { 'y' }) -Strict:$inRdp) {
                 Set-Reg $ts 'fDenyTSConnections' 1 'DWord' 'Remote Desktop is OFF'
-                Invoke-Fix 'Disable the Remote Desktop firewall rules' { Disable-NetFirewallRule -DisplayGroup 'Remote Desktop' -ErrorAction Stop } | Out-Null
+                Invoke-Fix 'Disable the Remote Desktop firewall rules' { Disable-NetFirewallRule -Name 'RemoteDesktop-*' -ErrorAction Stop } | Out-Null
             }
         } else { Add-Result 'OK' 'Remote Desktop is off' }
     }
@@ -1298,6 +1359,7 @@ function Invoke-RemoteAccess {
     Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\Remote Assistance' 'fAllowToGetHelp' 0 'DWord' 'Remote Assistance is off'
     Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\Remote Assistance' 'fAllowFullControl' 0 'DWord' 'Remote Assistance cannot take full control'
     Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' 'fAllowUnsolicited' 0 'DWord' 'No unsolicited Remote Assistance offers'
+    Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' 'fAllowToGetHelp' 0 'DWord' 'Remote Assistance requests are off (policy)'
     Write-Info 'Windows Remote Management (WinRM) security'
     $wrm = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM'
     Set-Reg "$wrm\Service" 'AllowBasic' 0 'DWord' 'WinRM service: no Basic (plain-text) authentication'
@@ -1316,6 +1378,7 @@ function Invoke-Shares {
     $fileShareCritical = Test-Critical @('smb', 'fileshare', 'file-sharing', 'filesharing')
     $defaults = @('ADMIN$', 'IPC$', 'print$')
     if ($script:IsDC) { $defaults += @('NETLOGON', 'SYSVOL') }
+    $everyone = Get-WellKnownName 'S-1-1-0' 'Everyone'
     $shares = @()
     try { $shares = @(Get-SmbShare -ErrorAction Stop | Where-Object { $defaults -notcontains $_.Name -and $_.Name -notmatch '^[A-Z]\$$' }) } catch { Add-Result 'FAILED' 'Cannot list shares'; return }
     if ($shares.Count -eq 0) { Add-Result 'OK' 'Only the built-in shares exist' }
@@ -1327,9 +1390,9 @@ function Invoke-Shares {
             if (Confirm-Step "Remove share '$sn'? (the folder and files stay, only the sharing stops)" 'y') {
                 Invoke-Fix "Stopped sharing '$sn'" { Remove-SmbShare -Name $sn -Force -ErrorAction Stop } | Out-Null
             }
-        } elseif ($access -match 'Everyone:(Full|Change)') {
+        } elseif ($access -match ('(^|, )' + [regex]::Escape($everyone) + ':(Full|Change)')) {
             if (Confirm-Step "Share '$sn' lets Everyone write. Remove Everyone's access?" 'y') {
-                Invoke-Fix "Removed Everyone from share '$sn'" { Revoke-SmbShareAccess -Name $sn -AccountName 'Everyone' -Force -ErrorAction Stop | Out-Null } | Out-Null
+                Invoke-Fix "Removed Everyone from share '$sn'" { Revoke-SmbShareAccess -Name $sn -AccountName $everyone -Force -ErrorAction Stop | Out-Null } | Out-Null
             }
         }
     }
@@ -1339,7 +1402,7 @@ function Invoke-Shares {
 # SECTION: Prohibited software
 # ===========================================================================
 $SoftwarePatterns = [ordered]@{
-    'hacking tool'       = 'wireshark|\bnmap\b|zenmap|npcap|winpcap|cain\b|abel\b|john the ripper|hashcat|\bhydra\b|metasploit|burp ?suite|ophcrack|aircrack|netcat|\bncat\b|angry ip|advanced ip scanner|nirsoft|mimikatz|l0phtcrack|lophtcrack|nessus|openvas|nikto|sqlmap|ettercap|maltego|cheat engine|keylog|ardamax|spyrix|refog|revealer|wifi password|password recovery|brutus|\bthc-|lazagne|responder|bloodhound'
+    'hacking tool'       = 'wireshark|\bnmap\b|zenmap|npcap|winpcap|\bcain\b|\babel\b|john the ripper|hashcat|\bhydra\b|metasploit|burp ?suite|ophcrack|aircrack|netcat|\bncat\b|angry ip|advanced ip scanner|nirsoft|mimikatz|l0phtcrack|lophtcrack|nessus|openvas|nikto|sqlmap|ettercap|maltego|cheat engine|keylog|ardamax|spyrix|refog|revealer|wifi password|password recovery|brutus|\bthc-|lazagne|responder|bloodhound'
     'game'               = '\bsteam\b|epic games|minecraft|roblox|\borigin\b|\bea app\b|battle\.net|ubisoft|uplay|gog galaxy|league of legends|riot client|fortnite|valorant|counter-strike|solitaire|candy crush|chess titans|pinball|world of warcraft|blizzard|\bosu!'
     'file-sharing (P2P)' = 'utorrent|bittorrent|qbittorrent|vuze|azureus|frostwire|limewire|kazaa|\bemule\b|shareaza|deluge|transmission|tixati|bitcomet|ares galaxy|soulseek'
     'remote-access tool' = 'teamviewer|anydesk|tightvnc|realvnc|ultravnc|tigervnc|vnc server|logmein|splashtop|ammyy|radmin|rustdesk|chrome remote desktop|remote utilities|supremo|dameware|netsupport|screenconnect|connectwise control'
@@ -1366,7 +1429,7 @@ function Uninstall-Program($Program) {
     if (-not $cmd) { throw "it has no silent uninstaller" }
     Write-HardenLog "UNINSTALL $($Program.DisplayName): $cmd"
     $p = Start-Process -FilePath 'cmd.exe' -ArgumentList "/c `"$cmd`"" -Wait -PassThru -WindowStyle Hidden
-    if ($p.ExitCode -notin @(0, 1605, 3010)) { throw "uninstaller exit code $($p.ExitCode)" }
+    if ($p.ExitCode -notin @(0, 1605, 1641, 3010)) { throw "uninstaller exit code $($p.ExitCode)" }
 }
 
 function Invoke-Software {
@@ -1425,6 +1488,25 @@ function Get-SearchRoots {
     return $roots
 }
 
+# One walk over the disk (instead of one Get-ChildItem -Recurse per root): skips junctions/symlinks (no loops, no
+# "Application Data" access-denied noise) and whole folders that cannot hold anything interesting.
+function Get-FilesOnePass([string[]]$Roots, [string]$SkipDirRegex) {
+    $stack = New-Object System.Collections.Generic.Stack[string]
+    foreach ($r in $Roots) { if ($r -and (Test-Path -LiteralPath $r)) { $stack.Push($r) } }
+    while ($stack.Count -gt 0) {
+        $dir = $stack.Pop()
+        try {
+            $di = New-Object System.IO.DirectoryInfo $dir
+            foreach ($f in $di.GetFiles()) { $f }
+            foreach ($d in $di.GetDirectories()) {
+                if (($d.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+                if ($SkipDirRegex -and (($d.FullName + '\') -match $SkipDirRegex)) { continue }
+                $stack.Push($d.FullName)
+            }
+        } catch { Write-HardenLog "not readable: $dir" }
+    }
+}
+
 # Deletes each path literally: names like "song [remix].mp3" are not wildcards
 function Remove-FileList([string[]]$Paths) {
     foreach ($p in $Paths) { Remove-Item -LiteralPath $p -Force -ErrorAction Stop }
@@ -1435,23 +1517,22 @@ function Invoke-Files {
     Write-Why 'Company policy on CyberPatriot images usually bans personal media and hacking tools. Each one removed is often worth points.'
     Write-Warn 'Answer the FORENSICS QUESTIONS first - they sometimes ask about these files!'
     $media = @('.mp3', '.mp4', '.m4a', '.m4v', '.wav', '.wma', '.wmv', '.flac', '.aac', '.ogg', '.avi', '.mkv', '.mov', '.flv', '.mpg', '.mpeg', '.webm', '.3gp', '.aiff', '.mid', '.torrent')
+    $skipDir = '(?i)\\AppData\\Local\\(Microsoft|Packages)\\|\\AppData\\Roaming\\Microsoft\\(Windows\\Recent|Teams)\\|\\harden-toolkit\\'
     $skipPath = '(?i)\\AppData\\Local\\(Microsoft|Packages)\\|\\AppData\\Roaming\\Microsoft\\(Windows\\Recent|Teams)|cyberpatriot|\\harden-toolkit\\'
     $toolRegex = '(?i)^(nc|nc64|ncat|netcat|nmap|zenmap|mimikatz.*|pwdump.*|fgdump.*|wce|procdump(64)?|psexec(64)?|lazagne.*|rubeus.*|sharphound.*|bloodhound.*|john.*|hashcat.*|hydra.*|cain.*|keylog.*|.*backdoor.*|.*rootkit.*|xmrig.*|.*miner.*)\.(exe|ps1|bat|py|zip|7z)$'
     $dataRegex = '(?i)(\.pcapng?$|\.cap$|password|passwd|creditcard|credit_card|\bssn\b|\.kdbx$|rockyou|wordlist|hashes)'
-    $mediaFiles = @(); $tools = @(); $data = @()
-    foreach ($root in Get-SearchRoots) {
-        foreach ($f in @(Get-ChildItem -Path $root -Recurse -File -Force -ErrorAction SilentlyContinue)) {
-            if ($f.FullName -match $skipPath) { continue }
-            if ($media -contains $f.Extension.ToLower()) { $mediaFiles += $f.FullName }
-            elseif ($f.Name -match $toolRegex) { $tools += $f.FullName }
-            elseif ($f.Name -match $dataRegex -and $f.Extension -match '(?i)^\.(txt|csv|xlsx?|docx?|pcapng|pcap|cap|kdbx|lst)$') { $data += $f.FullName }
-        }
+    $mediaFiles = New-Object System.Collections.Generic.List[string]; $tools = New-Object System.Collections.Generic.List[string]; $data = New-Object System.Collections.Generic.List[string]
+    foreach ($f in (Get-FilesOnePass (Get-SearchRoots) $skipDir)) {
+        if ($f.FullName -match $skipPath) { continue }
+        if ($media -contains $f.Extension.ToLower()) { $mediaFiles.Add($f.FullName) }
+        elseif ($f.Name -match $toolRegex) { $tools.Add($f.FullName) }
+        elseif ($f.Name -match $dataRegex -and $f.Extension -match '(?i)^\.(txt|csv|xlsx?|docx?|pcapng|pcap|cap|kdbx|lst)$') { $data.Add($f.FullName) }
     }
     foreach ($f in @(Get-ChildItem "$env:SystemDrive\" -File -Force -ErrorAction SilentlyContinue)) {
-        if ($media -contains $f.Extension.ToLower()) { $mediaFiles += $f.FullName }
+        if ($media -contains $f.Extension.ToLower()) { $mediaFiles.Add($f.FullName) }
     }
-    foreach ($f in @(Get-ChildItem "$env:SystemRoot\Temp" -Recurse -File -Force -ErrorAction SilentlyContinue)) {
-        if ($f.Name -match $toolRegex) { $tools += $f.FullName }
+    foreach ($f in (Get-FilesOnePass @("$env:SystemRoot\Temp") $null)) {
+        if ($f.Name -match $toolRegex) { $tools.Add($f.FullName) }
     }
     if ($mediaFiles.Count -eq 0) { Add-Result 'OK' 'No media files found' }
     else {
@@ -1490,6 +1571,14 @@ $SuspiciousCmdRegex = '(?i)(powershell|pwsh).*(-enc|-e\s|-w(indowstyle)?\s+h|dow
 
 function Get-UserHives {
     return @(Get-ChildItem 'Registry::HKEY_USERS' -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -match '^S-1-5-21-[\d-]+$' } | ForEach-Object { "Registry::HKEY_USERS\$($_.PSChildName)" })
+}
+
+# Built-in tasks (e.g. Server Manager's CleanupOldPerfLogs runs a .vbs from System32) match the script patterns;
+# under \Microsoft\ they only count as suspicious when they run from a user-writable folder.
+function Test-SuspiciousTask([string]$TaskPath, [string]$Actions) {
+    if ($Actions -notmatch $SuspiciousCmdRegex) { return $false }
+    $systemOwned = $TaskPath -like '\Microsoft\*' -and $Actions -match '(?i)^"?(%systemroot%|%windir%|[A-Z]:\\Windows\\|[A-Z]:\\Program Files)' -and $Actions -notmatch '(?i)\\(Temp|Users|PerfLogs|ProgramData)\\'
+    return (-not $systemOwned)
 }
 
 function Invoke-Backdoors {
@@ -1548,7 +1637,7 @@ function Invoke-Backdoors {
     foreach ($t in $tasks) {
         $actions = @($t.Actions | ForEach-Object { "$($_.Execute) $($_.Arguments)".Trim() }) -join ' ; '
         $isMs = $t.TaskPath -like '\Microsoft\*'
-        if ($actions -match $SuspiciousCmdRegex) {
+        if (Test-SuspiciousTask $t.TaskPath $actions) {
             Add-Result 'REVIEW' "SUSPICIOUS scheduled task $($t.TaskPath)$($t.TaskName): $actions"
             if (Confirm-Step "Delete scheduled task '$($t.TaskName)'?" 'y') {
                 $tn = $t.TaskName; $tp = $t.TaskPath
@@ -1654,9 +1743,9 @@ function Invoke-Backdoors {
             if (Confirm-Step "Remove WMI subscription '$($c.Name)'?" 'y') {
                 $cons = $c
                 Invoke-Fix "Removed WMI subscription $($c.Name)" {
-                    $binds = @(Get-CimInstance -Namespace root\subscription -ClassName __FilterToConsumerBinding | Where-Object { "$($_.Consumer)" -match [regex]::Escape($cons.Name) })
+                    $binds = @(Get-CimInstance -Namespace root\subscription -ClassName __FilterToConsumerBinding | Where-Object { $_.Consumer.Name -eq $cons.Name -or "$($_.Consumer)" -match [regex]::Escape($cons.Name) })
                     foreach ($b in $binds) {
-                        $filterName = [regex]::Match("$($b.Filter)", 'Name = "([^"]+)"').Groups[1].Value
+                        $filterName = if ($b.Filter.Name) { "$($b.Filter.Name)" } else { [regex]::Match("$($b.Filter)", 'Name = "([^"]+)"').Groups[1].Value }
                         $b | Remove-CimInstance -ErrorAction Stop
                         if ($filterName) { Get-CimInstance -Namespace root\subscription -ClassName __EventFilter | Where-Object { $_.Name -eq $filterName } | Remove-CimInstance -ErrorAction SilentlyContinue }
                     }
@@ -1904,7 +1993,7 @@ function Invoke-Roles {
             $rb = Get-ADOptionalFeature -Filter "Name -eq 'Recycle Bin Feature'"
             if (-not $rb.EnabledScopes) {
                 Add-Result 'REVIEW' 'The AD Recycle Bin is off (deleted accounts cannot be restored)'
-                if (Confirm-Step 'Turn on the AD Recycle Bin? (cannot be turned off again)' 'y') {
+                if (Confirm-Step 'Turn on the AD Recycle Bin? (cannot be turned off again)' 'n' -Strict) {
                     $forest = (Get-ADForest).Name
                     Invoke-Fix 'AD Recycle Bin on' { Enable-ADOptionalFeature 'Recycle Bin Feature' -Scope ForestOrConfigurationSet -Target $forest -Confirm:$false -ErrorAction Stop } | Out-Null
                 }
@@ -1951,7 +2040,7 @@ function Invoke-Updates {
 
     Write-Info 'Installing updates'
     if ($script:Mode -eq 'Audit') { Add-Result 'REVIEW' 'Check for updates: Settings > Windows Update > Check for updates (Apply mode can install them)'; return }
-    $go = switch ($script:InstallUpdates) { 'yes' { $true } 'no' { $false } default { Confirm-Step 'Search for and install ALL Windows updates now? (can take 10-60 minutes)' 'y' } }
+    $go = switch ($script:InstallUpdates) { 'yes' { $true } 'no' { $false } default { Confirm-Step 'Search for and install ALL Windows updates now? (can take 10-60 minutes)' 'n' -Strict } }
     if (-not $go) { Add-Result 'SKIPPED' 'Windows updates not installed (your choice) - use Settings > Windows Update'; return }
     try {
         Write-Host '      Searching for updates (this can take several minutes)...' -ForegroundColor DarkGray
@@ -2003,6 +2092,7 @@ function Invoke-Section([string]$Id) {
     $s = $Sections | Where-Object { $_.Id -eq $Id } | Select-Object -First 1
     if (-not $s) { Write-Warn "Unknown section '$Id' (use -List)"; return }
     $script:CurrentSection = $s.Id
+    $script:SecCache = $null
     Write-Header ("{0}   [{1}]" -f $s.Title, $script:Mode.ToUpper())
     Add-Content -Path $ReportFile -Value "`r`n## $($s.Title)`r`n"
     try { & $s.Fn } catch { Add-Result 'FAILED' "Section stopped early - $($_.Exception.Message)" }
@@ -2059,7 +2149,10 @@ $role = if ($script:IsDC) { 'Domain Controller' } elseif ($script:IsServer) { 'S
 Write-Host "  System: $($script:OsName)   Role: $role   PowerShell: $($PSVersionTable.PSVersion)"
 Write-HardenLog "System: $($script:OsName) ($role)"
 
-if ($Config) { Import-ReadmeConfig $Config }
+if ($Config) {
+    try { Import-ReadmeConfig $Config }
+    catch { Write-Host "Cannot read the config file: $($_.Exception.Message)" -ForegroundColor Red; return }
+}
 elseif (-not $script:AssumeYes) { Read-ReadmeInfo }
 Complete-ReadmeInfo
 
