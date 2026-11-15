@@ -1,6 +1,6 @@
 # Debian checklist (Debian 11 / 12)
 
-Debian 12 ("bookworm") is in **Round 2, the State round and the Semifinals** this season.
+Debian 12 ("bookworm") is **not one of this season's images** (CyberPatriot 19 uses Linux Mint 21 and Ubuntu 24). Keep this checklist for older Debian images, and for practising the places where Debian differs from Mint.
 
 Debian is Ubuntu's and Linux Mint's "parent", so most commands are the same as the [Linux Mint checklist](linux-mint.md). This page walks through the whole job and explains **the Debian differences** that trip people up. Where a step is exactly the same as Mint, it links there.
 

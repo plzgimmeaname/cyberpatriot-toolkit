@@ -1,6 +1,6 @@
 # Linux Mint checklist (Mint 20 / 21 / 22, Cinnamon)
 
-Linux Mint is in **Round 1, the State round, and the Semifinals** this season. It is built on Ubuntu, so almost everything here also works on Ubuntu (see the [Ubuntu checklist](ubuntu.md) for the few differences).
+Linux Mint is in **Round 1, Round 2, the State round, and the Semifinals** this season. It is built on Ubuntu, so almost everything here also works on Ubuntu (see the [Ubuntu checklist](ubuntu.md) for the few differences).
 
 **How to use this page**
 - Work **top to bottom**. The order matches where points usually are.

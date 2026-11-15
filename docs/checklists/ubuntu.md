@@ -1,6 +1,6 @@
 # Ubuntu checklist (20.04 / 22.04 / 24.04)
 
-Ubuntu isn't in this season's CyberPatriot lineup, but it's very common on **older practice images**. Linux Mint is built on Ubuntu, so **follow the [Linux Mint checklist](linux-mint.md)**. Everything works the same except the items below.
+Ubuntu 24 is the **State round** image this season, and Ubuntu 22 is used in the training rounds. Linux Mint is built on Ubuntu, so **follow the [Linux Mint checklist](linux-mint.md)**. Everything works the same except the items below.
 
 > [!TIP]
 > The Linux script (`scripts/linux/harden.sh`) detects Ubuntu automatically. To run it first, follow [step 1.2 of the Mint checklist](linux-mint.md#12-fast-path-run-the-hardening-script).

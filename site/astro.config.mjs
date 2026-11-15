@@ -15,9 +15,9 @@ const checklistBadges = {
   'windows-10-11': { text: 'R1 · R2', variant: 'note' },
   'windows-server': { text: 'R2+', variant: 'note' },
   'linux-mint': { text: 'R1+', variant: 'note' },
-  debian: { text: 'R2+', variant: 'note' },
-  freebsd: { text: 'Semis', variant: 'default' },
-  ubuntu: { text: 'Legacy', variant: 'default' },
+  debian: { text: 'Not in CP-19', variant: 'default' },
+  freebsd: { text: 'Not in CP-19', variant: 'default' },
+  ubuntu: { text: 'State', variant: 'note' },
 };
 
 /** The <head> tags added to every page. The type is written out because a spread inside an

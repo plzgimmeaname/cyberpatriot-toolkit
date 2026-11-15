@@ -1,6 +1,6 @@
 # FreeBSD checklist (13 / 14)
 
-FreeBSD may appear in the **Semifinals** (depending on tier). It's a Unix like Linux, but **many commands and file locations are different**. Use this translation table whenever you get stuck.
+FreeBSD is **not in the CyberPatriot 19 rounds** — check the [official challenges page](https://www.uscyberpatriot.org/competition/current-competition/challenges-by-round) before a round for what it actually uses. It's a Unix like Linux, but **many commands and file locations are different**. Use this translation table whenever you get stuck.
 
 ## FreeBSD vs. Linux, the quick translation
 

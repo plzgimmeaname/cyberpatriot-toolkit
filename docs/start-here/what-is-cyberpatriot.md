@@ -37,11 +37,13 @@ After each round CyberPatriot publishes the general categories of problems. They
 | Round | Images |
 |---|---|
 | Round 1 | Windows 11, Linux Mint 21 |
-| Round 2 | Windows 11, Windows Server 2022, Debian 12 |
-| State | Windows Server 2022, Linux Mint 21, Debian 12 |
-| Semifinals | Linux Mint 21, Windows Server 2022, Debian 12 or FreeBSD |
+| Round 2 | Windows 11, Windows Server 2022, Linux Mint 21 |
+| State | Windows Server 2022, Linux Mint 21, Ubuntu 24 |
+| Semifinals | Linux Mint 21, Windows Server 2022 (plus Server 2019 in the Platinum and Gold tiers) |
 
-Older practice images may also be Windows 10, Windows Server 2019, or Ubuntu. There is a checklist for each.
+Checklists also cover **Windows 10**, **Server 2019**, **Ubuntu 22** and **Debian 12**, which appear on older practice images. Debian and FreeBSD are not in the CyberPatriot 19 rounds.
+
+Source: [CyberPatriot 19 challenges and scoring values](https://www.uscyberpatriot.org/competition/current-competition/challenges-by-round).
 
 ## How a round works
 

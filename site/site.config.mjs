@@ -48,9 +48,11 @@ export default {
     years: '2026–27',
     rounds: [
       { id: 'r1', name: 'Round 1', dates: 'Oct 22–25, 2026', images: ['windows', 'mint'] },
-      { id: 'r2', name: 'Round 2', dates: 'Nov 12–15, 2026', images: ['windows', 'server', 'debian'] },
-      { id: 'state', name: 'State Round', dates: 'Dec 10–13, 2026', images: ['server', 'mint', 'debian'] },
-      { id: 'semis', name: 'Semifinals', dates: 'Jan 21–23, 2027', images: ['mint', 'server', 'debian', 'freebsd'] },
+      // Image lists follow the official CP-19 challenges page, not older seasons:
+      // https://www.uscyberpatriot.org/competition/current-competition/challenges-by-round
+      { id: 'r2', name: 'Round 2', dates: 'Nov 12–15, 2026', images: ['windows', 'server', 'mint'] },
+      { id: 'state', name: 'State Round', dates: 'Dec 10–13, 2026', images: ['server', 'mint', 'ubuntu'] },
+      { id: 'semis', name: 'Semifinals', dates: 'Jan 21–23, 2027', images: ['mint', 'server'] },
     ],
   },
 };

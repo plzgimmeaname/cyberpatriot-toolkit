@@ -16,10 +16,10 @@ Step-by-step checklists, beginner guides and hardening scripts for practicing **
 |---|---|---|
 | **Windows 11** (and 10) | Round 1, Round 2 | [Windows 10 / 11](checklists/windows-10-11.md) |
 | **Windows Server 2022** (2016/2019) | Round 2, State, Semifinals | [Windows Server](checklists/windows-server.md) |
-| **Linux Mint 21** | Round 1, State, Semifinals | [Linux Mint](checklists/linux-mint.md) |
-| **Debian 12** | Round 2, State, Semifinals | [Debian](checklists/debian.md) |
-| **FreeBSD** | Semifinals (some tiers) | [FreeBSD](checklists/freebsd.md) |
-| Ubuntu (older images) | — | [Ubuntu](checklists/ubuntu.md) |
+| **Linux Mint 21** | Round 1, Round 2, State, Semifinals | [Linux Mint](checklists/linux-mint.md) |
+| **Ubuntu 24** | State round (22 in the training rounds) | [Ubuntu](checklists/ubuntu.md) |
+| **Debian 12** | Not in CP-19 (older images) | [Debian](checklists/debian.md) |
+| **FreeBSD** | Not in CP-19 | [FreeBSD](checklists/freebsd.md) |
 
 ## Guides
 
