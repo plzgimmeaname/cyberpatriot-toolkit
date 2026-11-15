@@ -3,6 +3,10 @@
 // card fits on one printed page; the full reasoning lives in the checklists.
 // Commands are written to be safe to read on a locked-down exam machine: no
 // wildcards that delete, no restarts, nothing that needs the internet.
+//
+// Verified 2026-11-15: every POSIX line was run in the Debian 12 and Ubuntu
+// 24.04 containers; every flag was checked against pw(8), usermod(8), chage(1),
+// ufw(8), net accounts, Set-LocalUser and Set-ADDefaultDomainPasswordPolicy.
 
 export interface CardLine {
   /** What this line gets you. */
@@ -32,7 +36,7 @@ const WINDOWS_COMMON: CardGroup[] = [
     title: '0 · before anything',
     lines: [
       { do: 'Snapshot or restore point, then read the README out loud', note: 'no snapshot, no undo' },
-      { do: 'Write the score down', cmd: 'Get-Date; (Get-MpComputerStatus).QuickScanEndTime' },
+      { do: 'Write the score and the time down', cmd: 'Get-Date', note: 'the score itself is on the Scoring Report, not in a command' },
       { do: 'Open PowerShell as Administrator', cmd: 'Start-Process powershell -Verb RunAs' },
     ],
   },
@@ -40,7 +44,7 @@ const WINDOWS_COMMON: CardGroup[] = [
     title: '1 · users and groups',
     lines: [
       { do: 'Every local account', cmd: 'Get-LocalUser | Format-Table Name,Enabled,LastLogon,PasswordLastSet' },
-      { do: 'Who is an administrator', cmd: 'Get-LocalGroupMember Administrators' },
+      { do: 'Who is an administrator', cmd: 'Get-LocalGroupMember Administrators', note: 'non-English image? use -SID S-1-5-32-544' },
       { do: 'Delete a bad account', cmd: 'Remove-LocalUser -Name mallory' },
       { do: 'Disable instead, if unsure', cmd: 'Disable-LocalUser -Name mallory' },
       { do: 'Set a strong local password', cmd: 'Set-LocalUser -Name alice -Password (Read-Host -AsSecureString)' },
@@ -67,7 +71,7 @@ const WINDOWS_COMMON: CardGroup[] = [
       { do: 'Shares', cmd: 'Get-SmbShare' },
       { do: 'Scheduled tasks you did not expect', cmd: 'Get-ScheduledTask | ? { $_.TaskPath -notlike "\\Microsoft\\*" } | Select TaskName,TaskPath' },
       { do: 'Autoruns (Sysinternals)', cmd: 'autorunsc64.exe -accepteula -a * -nobanner -s' },
-      { do: 'Local users in the registry (backdoor check)', cmd: 'Get-ItemProperty HKLM:\\SAM\\SAM\\Domains\\Account\\Users\\Names\\*' },
+      { do: 'Every local account with its SID', cmd: 'Get-CimInstance Win32_UserAccount -Filter "LocalAccount=True" | Select Name,SID,Disabled', note: 'the SAM registry key needs SYSTEM, not just Administrator' },
     ],
   },
   {
@@ -97,7 +101,8 @@ const POSIX_USER: CardGroup = {
     { do: 'Hidden root accounts (UID 0)', cmd: "awk -F: '$3==0 {print $1}' /etc/passwd" },
     { do: 'sudo / wheel members', cmd: 'getent group sudo wheel' },
     { do: 'Delete an account and its files', cmd: 'deluser --remove-home mallory' },
-    { do: 'Lock without deleting', cmd: 'usermod -L -e 1 mallory' },
+    { do: 'Lock the password without deleting', cmd: 'usermod -L mallory' },
+    { do: 'Expire the whole account (no login)', cmd: 'chage -E 0 mallory' },
   ],
 };
 
@@ -116,7 +121,7 @@ const POSIX_FIREWALL: CardGroup = {
   lines: [
     { do: 'Is a firewall even installed', cmd: 'command -v ufw nft iptables' },
     { do: 'Rules', cmd: 'ufw status verbose' },
-    { do: 'Default deny, allow SSH', cmd: 'ufw default deny incoming && ufw allow 22/tcp && ufw enable' },
+    { do: 'Default deny, allow SSH', cmd: 'ufw default deny incoming && ufw allow 22/tcp && ufw --force enable', note: '--force skips the y/n prompt' },
     { do: 'Pending updates', cmd: 'apt list --upgradable' },
     { do: 'Install everything', cmd: 'apt update && apt full-upgrade -y' },
   ],
@@ -246,9 +251,9 @@ export const FIELD_CARDS: FieldCard[] = [
       {
         title: '2 · passwords',
         lines: [
-          { do: 'Password ageing defaults', cmd: 'grep -E "^(passwd_)?(max|min|warn)" /etc/login.conf' },
-          { do: 'Require a long password', cmd: 'grep passwd_format /etc/login.conf' },
-          { do: 'Apply to one user', cmd: 'pw usermod alice -p 90 -w 14' },
+          { do: 'Password ageing for a login class', cmd: 'grep -n passwordtime /etc/login.conf', note: 'empty unless the image sets it: FreeBSD has no max password age by default' },
+          { do: 'Force a password change within 90 days', cmd: 'pw usermod alice -p +90d', note: '-p takes a date, not days: +90d, 31-mar-27 or a UNIX time' },
+          { do: 'Expire the whole account in 90 days', cmd: 'pw usermod alice -e +90d' },
         ],
       },
       {
@@ -272,7 +277,7 @@ export const FIELD_CARDS: FieldCard[] = [
       {
         title: '5 · backdoors and files',
         lines: [
-          { do: 'Every user cron', cmd: 'crontab -l; ls -la /etc/cron.d /usr/local/etc/cron.d' },
+          { do: 'Every user cron', cmd: 'crontab -l; ls -la /etc/cron.d /usr/local/etc/cron.d 2>/dev/null' },
           { do: 'rc.conf lines you did not expect', cmd: 'grep -v "^#" /etc/rc.conf' },
           { do: 'SUID files', cmd: 'find / -xdev -perm -4000 -type f 2>/dev/null' },
           { do: 'Media and tools', cmd: "find /home /root /tmp -xdev -type f \\( -iname '*.mp3' -o -iname '*.pcap' \\) 2>/dev/null" },

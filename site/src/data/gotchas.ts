@@ -33,7 +33,7 @@ export const GOTCHAS: Gotcha[] = [
     kind: 'warn',
     title: 'Windows 11 Home has no Local Security Policy',
     detail:
-      'secpol.msc is missing on Home editions. Use Settings → Accounts → Sign-in options for lockout, and the registry under HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies for the rest. Server 2022 and Pro editions have secpol.msc.',
+      'secpol.msc is missing on Home editions. `net accounts` still works there, as do Settings → Accounts → Sign-in options; use the registry under HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies for the rest. Server 2022 and Pro editions have secpol.msc.',
   },
   {
     image: 'windows',
@@ -90,10 +90,10 @@ export const GOTCHAS: Gotcha[] = [
   },
   {
     image: 'mint',
-    kind: 'trap',
-    title: 'There is no /var/log/auth.log',
+    kind: 'warn',
+    title: 'auth.log exists only if rsyslog is installed',
     detail:
-      'Mint 21 uses systemd-journald only. `journalctl -u ssh --since -1h` is where the login attempts are; a checklist step that greps auth.log will look "clean" when it is not.',
+      'A normal Mint 21.3 install includes rsyslog, so /var/log/auth.log is there. A minimized or container-based image may leave it out, and then the file simply does not exist while the logins are in the journal. Run `ls /var/log/auth.log` first; if it is missing, `journalctl -u ssh --since -1h` is the same evidence.',
   },
   {
     image: 'mint',
@@ -117,6 +117,13 @@ export const GOTCHAS: Gotcha[] = [
     title: 'This is the State round image',
     detail:
       'Ubuntu 24.04 replaced Debian in the CP-19 lineup. The checklist is nearly identical to Mint, with ufw installed and sudo available for the first user.',
+  },
+  {
+    image: 'ubuntu',
+    kind: 'warn',
+    title: 'auth.log exists only if rsyslog is installed',
+    detail:
+      'A standard Ubuntu 24.04 install ships rsyslog, so /var/log/auth.log is present. Minimal server images and containers leave rsyslog out. Check `ls /var/log/auth.log`; when it is absent, `journalctl -u ssh` has the same events.',
   },
   {
     image: 'ubuntu',
@@ -172,9 +179,9 @@ export const GOTCHAS: Gotcha[] = [
   {
     image: 'debian',
     kind: 'note',
-    title: 'AppArmor may be installed but not enforcing',
+    title: 'AppArmor is on by default — verify, do not assume',
     detail:
-      'Check `aa-status`. If it reports no profiles loaded, enable apparmor in /etc/default/grub (apparmor=1 security=apparmor), run update-grub and reboot.',
+      'Debian has enabled AppArmor since Debian 10, so on 12 it is normally loaded. Check `cat /sys/module/apparmor/parameters/enabled` (Y) and `aa-status`. Only if it is off — which happens on some VMs and containers — add apparmor=1 security=apparmor to GRUB, run update-grub and reboot.',
   },
 
   // ---- FreeBSD --------------------------------------------------------------
@@ -202,9 +209,9 @@ export const GOTCHAS: Gotcha[] = [
   {
     image: 'freebsd',
     kind: 'note',
-    title: 'root can log in over SSH here',
+    title: 'Root over SSH is off by default',
     detail:
-      'PermitRootLogin is often yes. Decide with the README in front of you: the scored setting is usually "no", but a broken sshd_config locks you out. Always run `sshd -t` before restarting sshd.',
+      'FreeBSD ships `#PermitRootLogin no`, and sshd_config(5) documents no as the default, so password root logins are refused until someone changes it. Some practice images set `yes`. Read the line before touching it, and run `sshd -t` before restarting sshd: a broken config ends the session.',
   },
 ];
 

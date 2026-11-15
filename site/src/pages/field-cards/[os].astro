@@ -164,33 +164,59 @@ const lines = card.groups.reduce((n, g) => n + g.lines.length, 0);
   }
 
   @media print {
+    @page {
+      margin: 10mm 9mm;
+    }
     .fc__actions,
-    .fc__intro {
+    .fc__intro,
+    .fc__foot {
       display: none;
     }
     .fc {
+      gap: 0.35rem;
       color: #000;
+    }
+    .fc__bar-text {
+      font-size: 8.5pt;
+    }
+    /* Multi-column, not a grid: the groups flow and fill the page instead of
+       each grid row growing to its tallest card. */
+    .fc__grid {
+      display: block;
+      column-count: 2;
+      column-gap: 7mm;
     }
     .fc__group {
+      break-inside: avoid;
+      margin: 0 0 2.6mm;
+      padding: 0.22rem 0.42rem 0.3rem;
       border-color: #bbb;
       background: #fff;
-      padding: 0.3rem 0.5rem;
     }
-    .fc__group h2,
+    .fc__group h2 {
+      margin-bottom: 0.18rem;
+      color: #000;
+      font-size: 7.2pt;
+    }
+    .fc__group ul {
+      gap: 0.22rem;
+    }
     .fc__do {
       color: #000;
+      font-size: 8.8pt;
+      line-height: 1.2;
     }
     .fc__cmd {
+      padding: 0.12rem 0.28rem;
       border-color: #ccc;
       background: #f4f4f4;
       color: #000;
-      font-size: 8.5pt;
+      font-size: 7.4pt;
+      line-height: 1.25;
     }
     .fc__note {
       color: #7a4a00;
-    }
-    .fc__grid {
-      grid-template-columns: 1fr 1fr;
+      font-size: 7.2pt;
     }
   }
 </style>

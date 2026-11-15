@@ -40,7 +40,7 @@ export const TRIAGE_AREAS: TriageArea[] = [
       },
       {
         cause: 'You removed the last administrator, or removed yourself from sudo / Administrators.',
-        check: 'Linux: `getent group sudo wheel`. Windows: `Get-LocalGroupMember Administrators`.',
+        check: 'Linux: `getent group sudo wheel`. Windows: `Get-LocalGroupMember -SID S-1-5-32-544` (works on non-English images).',
         fix: 'Re-add the account from another admin session. If there is none, boot the recovery/single-user mode from the snapshot.',
       },
       {
@@ -94,7 +94,7 @@ export const TRIAGE_AREAS: TriageArea[] = [
       },
       {
         cause: 'You uninstalled a package to remove a service.',
-        check: '`dpkg -l | grep ^rc`, `Get-WindowsFeature`.',
+        check: '`dpkg -l | grep ^rc`; on Server, `Get-WindowsFeature` (not available on Windows 10/11).',
         fix: 'Reinstall it, then just stop and disable the service. Uninstalling breaks dependencies.',
       },
     ],

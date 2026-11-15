@@ -7,7 +7,7 @@
 //   public/palette.js            data + UI for the ⌘K command palette
 // Runs after sync-docs (see package.json), so it never invents content.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
@@ -180,14 +180,28 @@ writeFileSync(
 );
 written.push('manifest.webmanifest');
 
-// ---- Service worker: the whole checklist works with no internet --------------
-const core = [
-  `${BASE}/`,
-  `${BASE}/toolkit/`,
-  `${BASE}/progress/`,
-  `${BASE}/downloads/`,
-  ...CHECKLISTS.map((c) => `${BASE}/checklists/${c.id}/`),
-];
+// ---- Service worker: the whole site works with no internet -------------------
+/** Every route the site actually builds: hand-written pages on disk plus the synced docs. */
+function pageRoutes(dir = join(SITE, 'src/pages'), prefix = '') {
+  const out = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) out.push(...pageRoutes(join(dir, entry.name), `${prefix}/${entry.name}`));
+    else if (entry.name.endsWith('.astro') && !entry.name.includes('[')) {
+      const base = entry.name.replace(/\.astro$/, '');
+      out.push(base === 'index' ? `${prefix}/` : `${prefix}/${base}/`);
+    }
+  }
+  return out;
+}
+
+const routes = new Set([
+  '/',
+  ...Object.values(pages).map((p) => p.route),
+  ...pageRoutes().filter((r) => r !== '/404/'),
+  // The field cards are one dynamic route; list them explicitly.
+  ...CHECKLISTS.map((c) => `/field-cards/${c.id}/`),
+]);
+const core = [...routes].map((route) => `${BASE}${route}`);
 const build = Date.now().toString(36);
 
 writeFileSync(
