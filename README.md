@@ -2,7 +2,7 @@
 
 Beginner-friendly **checklists**, **guides** and **hardening scripts** for practicing CyberPatriot image challenges on Windows, Windows Server, Linux Mint, Debian, Ubuntu and FreeBSD.
 
-> **New to this?** Use the website: your deployed site (set its address in `site/site.config.mjs`), or start at **[docs/index.md](docs/index.md)** here on GitHub. Both walk you through everything in order.
+> **New to this?** Use the website: **https://plzgimmeaname.github.io/cyberpatriot-toolkit/**, or start at **[docs/index.md](docs/index.md)** here on GitHub. Both walk you through everything in order.
 
 ---
 
@@ -52,7 +52,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\windows\Harden.ps1
 
 ## Website
 
-your deployed site (set its address in `site/site.config.mjs`): [`site/`](site/) turns everything above into a website for people who don't use GitHub. It's built with Astro + Starlight and published to GitHub Pages by `.github/workflows/pages.yml`.
+**[https://plzgimmeaname.github.io/cyberpatriot-toolkit/](https://plzgimmeaname.github.io/cyberpatriot-toolkit/)** — [`site/`](site/) turns everything above into a website for people who don't use GitHub. It's built with Astro + Starlight and published to GitHub Pages by `.github/workflows/pages.yml`. To host it somewhere else, set `siteUrl` and `base` in `site/site.config.mjs`.
 
 - **Two sections:** **Toolkit** (dashboard, checklists, tools, scripts, reference: no introductions) for people who know the game, and **Learn** (welcome, 7 lessons, glossary) for beginners. Switch with the tabs at the top.
 - **Interactive checklists:** tick off steps, see your progress, jump to the next step, print, reset for a new image, and **Compact view** to hide the beginner explanations.

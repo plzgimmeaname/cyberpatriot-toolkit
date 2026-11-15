@@ -1,6 +1,6 @@
 # Roadmap
 
-Where the CyberPatriot Toolkit stands, how it's designed, and what's left. For how to *use* it, see the [README](README.md) or the website, your deployed site (set its address in `site/site.config.mjs`).
+Where the CyberPatriot Toolkit stands, how it's designed, and what's left. For how to *use* it, see the [README](README.md) or the [website](https://plzgimmeaname.github.io/cyberpatriot-toolkit/).
 
 ---
 
