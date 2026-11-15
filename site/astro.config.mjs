@@ -20,6 +20,18 @@ const checklistBadges = {
   ubuntu: { text: 'Legacy', variant: 'default' },
 };
 
+/** The <head> tags added to every page. The type is written out because a spread inside an
+ *  object literal widens `tag` to `string`, which `astro check` rejects. */
+/** @type {Array<{ tag: 'base'|'link'|'meta'|'title'|'style'|'script'|'noscript'|'template'; attrs?: Record<string, string | boolean | undefined>; content?: string }>} */
+const headTags = [
+  { tag: 'meta', attrs: { name: 'theme-color', content: '#0b1220' } },
+  { tag: 'meta', attrs: { name: 'robots', content: config.noindex ? 'noindex' : 'index,follow' } },
+  {
+    tag: 'style',
+    content: `:root{--sl-color-accent-low:${accent.darkLow};--sl-color-accent:${accent.dark};--sl-color-accent-high:${accent.darkHigh};--cp-gradient:linear-gradient(135deg,${accent.gradient[0]} 0%,${accent.gradient[1]} 100%)}:root[data-theme='light']{--sl-color-accent-low:${accent.lightLow};--sl-color-accent:${accent.light};--sl-color-accent-high:${accent.lightHigh}}`,
+  },
+];
+
 export default defineConfig({
   site,
   ...(base ? { base } : {}),
@@ -48,14 +60,7 @@ export default defineConfig({
         MarkdownContent: './src/components/overrides/MarkdownContent.astro',
         Hero: './src/components/overrides/Hero.astro',
       },
-      head: [
-        { tag: 'meta', attrs: { name: 'theme-color', content: '#0b1220' } },
-        ...(config.noindex ? [{ tag: 'meta', attrs: { name: 'robots', content: 'noindex' } }] : []),
-        {
-          tag: 'style',
-          content: `:root{--sl-color-accent-low:${accent.darkLow};--sl-color-accent:${accent.dark};--sl-color-accent-high:${accent.darkHigh};--cp-gradient:linear-gradient(135deg,${accent.gradient[0]} 0%,${accent.gradient[1]} 100%)}:root[data-theme='light']{--sl-color-accent-low:${accent.lightLow};--sl-color-accent:${accent.light};--sl-color-accent-high:${accent.lightHigh}}`,
-        },
-      ],
+      head: headTags,
       tableOfContents: { minHeadingLevel: 2, maxHeadingLevel: 3 },
       expressiveCode: {
         themes: ['github-dark-default', 'github-light-default'],
