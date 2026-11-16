@@ -1,0 +1,608 @@
+---
+import { withBase } from '../data/url';
+// Practice range: run the CyberPatriot practice images from here, through the
+// local agent in range/agent.py. The website itself never boots a VM.
+import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
+import { REPO_URL } from '../data/catalog.mjs';
+
+const steps = [
+  ['Pull', 'Point the catalog at your own copy of an image. The agent downloads it, checks the SHA-256, unpacks it and keeps the base disk read-only.'],
+  ['Boot', 'QEMU (Linux/macOS) or Hyper-V (Windows) starts a throw-away copy of the image with SSH or WinRM forwarded to this computer only.'],
+  ['Audit, then Apply', 'The agent copies the hardening script in, runs it, and brings back findings plus one log file per kind: apps, files, ports, processes, services, persistence.'],
+];
+
+const setupCommands = [
+  ['1. Prepare the catalog (once)', 'cp range/images.example.json range/images.json\n$EDITOR range/images.json      # your image paths, SSH keys, checksums'],
+  ['2. Start the agent (each time)', 'python3 range/agent.py --catalog range/images.json\n# prints: listening on http://127.0.0.1:8787   token: <paste it below>'],
+  ['3. Keep it private', 'cat ~/.rampart-range/token     # the token again, if you closed the window\n# The agent listens on loopback only; nobody else on the network can reach it.'],
+];
+---
+
+<StarlightPage
+  frontmatter={{
+    title: 'Practice range',
+    description:
+      'Boot the CyberPatriot practice images from this page, run the hardening script inside them, and read the apps, files, ports and process reports.',
+    editUrl: false,
+  }}
+>
+  <div class="rg cp-wide not-content">
+    <p class="rg__lead">
+      <strong>Paste a download link and the unzip password</strong> and the range downloads the image, unpacks it and boots it
+      on this computer, then runs the hardening script inside it. A small agent (range/agent.py) owns the VMs; this page is the
+      remote control, and the console, findings and every per-kind log appear here.
+    </p>
+
+    <div class="cp-callout cp-callout--warn">
+      <p>
+        <strong>The website cannot start a VM by itself.</strong> It is static and has no server, so the range agent
+        (<code>range/agent.py</code>) must be running on the computer that has QEMU or Hyper-V. Everything travels between your
+        browser and <code>127.0.0.1</code>; nothing is uploaded.
+      </p>
+      <p>
+        CyberPatriot practice images are given to coaches through the competition portal, not public links, so the catalog points
+        at <strong>your own copy</strong> of each image. Preparation is one-time: add your SSH key to a Linux template (or enable
+        WinRM on Windows), then every run starts from that clean copy.
+      </p>
+    </div>
+
+    <ol class="rg__steps">
+      {
+        steps.map(([title, text], i) => (
+          <li>
+            <span class="rg__n">{i + 1}</span>
+            <div>
+              <p class="rg__step-title">{title}</p>
+              <p class="rg__step-text">{text}</p>
+            </div>
+          </li>
+        ))
+      }
+    </ol>
+
+    <details class="rg__setup" id="range-setup">
+      <summary>Set up the agent (commands)</summary>
+      <p class="cp-hint">
+        From the repository root. Needs Python 3.9+, plus <code>qemu-system-x86</code> + <code>qemu-utils</code> (Linux) or the
+        Hyper-V role (Windows); SSH/scp for Linux guests, WinRM for Windows guests.
+      </p>
+      {
+        setupCommands.map(([label, code]) => (
+          <div>
+            <p class="rg__setup-label">{label}</p>
+            <pre class="rg__pre">{code}</pre>
+          </div>
+        ))
+      }
+      <p class="cp-hint">
+        The full field list, safety rules and known limits are in{' '}
+        <a href={`${REPO_URL}/blob/main/range/README.md`} rel="noopener">
+          range/README.md
+        </a>. The agent's API is documented there too, for mentors who want a script instead of this page.
+      </p>
+    </details>
+
+    <section class="rg__card" aria-labelledby="range-connect-title">
+      <h2 id="range-connect-title">Connect to your agent</h2>
+      <form class="rg__form" onsubmit="event.preventDefault()">
+        <label>
+          <span>Agent address</span>
+          <input id="range-url" type="url" value="http://127.0.0.1:8787" spellcheck="false" autocomplete="off" />
+        </label>
+        <label>
+          <span>Token</span>
+          <input id="range-token" type="password" placeholder="printed by range/agent.py" spellcheck="false" autocomplete="off" />
+        </label>
+        <div class="rg__form-actions">
+          <button id="range-connect-btn" class="cp-btn cp-btn--primary" type="button">Connect</button>
+          <span id="range-status" class="rg__status" data-state="off">Not connected</span>
+        </div>
+      </form>
+      <p class="cp-hint">
+        The token stays in this browser tab (session storage) and is only sent to the address above. If your browser blocks
+        <code>http://127.0.0.1</code> from an HTTPS page, open the site locally with <code>npm run dev</code> in <code>site/</code>
+        and use the page there.
+      </p>
+    </section>
+
+    <p id="range-msg" class="rg__msg" hidden></p>
+
+    <div id="range-live" hidden>
+      <section class="rg__card" aria-labelledby="range-config-title">
+        <div class="rg__card-head">
+          <h2 id="range-config-title">README answers</h2>
+          <button id="range-refresh-btn" class="cp-btn cp-btn--sm" type="button">Refresh</button>
+        </div>
+        <p class="cp-hint">The same three lists the script would ask for. They are written into the guest's config file for every run.</p>
+        <div class="rg__grid">
+          <label>
+            <span>Authorized admins</span>
+            <input id="cfg-admins" type="text" placeholder="alice dave" spellcheck="false" autocomplete="off" />
+          </label>
+          <label>
+            <span>Other authorized users</span>
+            <input id="cfg-users" type="text" placeholder="bob carol" spellcheck="false" autocomplete="off" />
+          </label>
+          <label class="rg__wide">
+            <span>Critical services that must keep working</span>
+            <input id="cfg-critical" type="text" placeholder="ssh apache2 mysql" spellcheck="false" autocomplete="off" />
+          </label>
+        </div>
+      </section>
+
+
+      <section class="rg__card" aria-labelledby="range-add-title">
+        <h2 id="range-add-title">Add an image from a link</h2>
+        <p class="cp-hint">
+          Paste the download address (ZIP, OVA, tar.gz, qcow2...) and, if the archive asks for one, the unzip password. The
+          agent downloads it to <code>~/.rampart-range/</code>, verifies the SHA-256 when you give one, unpacks it and boots a
+          throw-away copy.
+        </p>
+        <form class="rg__form rg__form--add" onsubmit="return false">
+          <label class="rg__wide">
+            <span>Download link</span>
+            <input id="add-url" type="url" placeholder="https://files.example.org/Mint21_Practice.zip" spellcheck="false" autocomplete="off" />
+          </label>
+          <label>
+            <span>Unzip password (if the archive has one)</span>
+            <input id="add-password" type="password" autocomplete="off" placeholder="used once, not saved" />
+          </label>
+          <label>
+            <span>Name (optional)</span>
+            <input id="add-name" type="text" placeholder="Mint 21 practice" spellcheck="false" autocomplete="off" />
+          </label>
+          <label>
+            <span>OS family</span>
+            <select id="add-family">
+              <option value="linux">Linux (Mint / Debian / Ubuntu)</option>
+              <option value="windows">Windows</option>
+              <option value="freebsd">FreeBSD</option>
+            </select>
+          </label>
+          <label>
+            <span>SSH private key (Linux/FreeBSD template)</span>
+            <input id="add-key" type="text" placeholder="~/.ssh/rampart_mint" spellcheck="false" autocomplete="off" />
+          </label>
+          <label>
+            <span>Guest user</span>
+            <input id="add-user" type="text" placeholder="student / Administrator" spellcheck="false" autocomplete="off" />
+          </label>
+          <label>
+            <span>SHA-256 (optional, recommended)</span>
+            <input id="add-sha" type="text" placeholder="checksum from the download page" spellcheck="false" autocomplete="off" />
+          </label>
+          <label class="rg__check">
+            <input id="add-boot" type="checkbox" checked />
+            <span>Boot it when the download finishes</span>
+          </label>
+          <div class="rg__form-actions rg__wide">
+            <button id="add-btn" class="cp-btn cp-btn--primary" type="button">Download &amp; boot</button>
+          </div>
+        </form>
+        <p class="cp-hint">
+          The password goes only to the agent on this computer, is used once and is never written to disk. Files encrypted
+          with AES (7-Zip, or WinZip's AES option) need <code>7zip</code> installed on the range host; plain ZIP passwords
+          work everywhere.
+        </p>
+      </section>
+
+      <section class="rg__card" aria-labelledby="range-images-title">
+        <h2 id="range-images-title">Images in the catalog</h2>
+        <div id="range-images" class="rg__images"></div>
+      </section>
+
+      <section class="rg__card" aria-labelledby="range-sessions-title">
+        <div class="rg__card-head">
+          <h2 id="range-sessions-title">Booted VMs</h2>
+          <span class="cp-hint">A booted VM stays on until you stop it; Reset boots the original image again.</span>
+        </div>
+        <div id="session-list" class="rg__sessions"></div>
+        <div id="session-view" hidden>
+          <h3 id="session-title" class="rg__h">Console</h3>
+          <p id="session-note" class="cp-hint"></p>
+          <figure id="session-screen-wrap" class="rg__screen" hidden>
+            <img id="session-screen" alt="Live frame from the booted practice VM" />
+            <figcaption class="cp-hint">A frame from the VM's display, refreshed every couple of seconds (QEMU only). Work inside the VM over SSH; this view is read-only.</figcaption>
+          </figure>
+          <pre id="session-console" class="rg__pre rg__pre--log"></pre>
+        </div>
+      </section>
+
+      <section class="rg__card" aria-labelledby="range-runs-title">
+        <h2 id="range-runs-title">Runs</h2>
+        <div class="rg__table-wrap">
+          <table class="rg-table rg-table--runs">
+            <thead>
+              <tr><th>Image</th><th>Started</th><th>State</th><th>Findings</th><th></th></tr>
+            </thead>
+            <tbody id="range-runs"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="range-detail" class="rg__card" hidden aria-labelledby="detail-title">
+        <div class="rg__card-head">
+          <h2 id="detail-title">Run</h2>
+          <div class="rg__actions">
+            <button id="detail-download" class="cp-btn cp-btn--sm" type="button">Findings JSON</button>
+            <button id="detail-stop" class="cp-btn cp-btn--sm" type="button">Stop</button>
+            <button id="detail-delete" class="cp-btn cp-btn--sm" type="button">Delete run</button>
+          </div>
+        </div>
+        <div id="detail-meta" class="rg__meta"></div>
+
+        <h3 class="rg__h">Live log</h3>
+        <pre id="detail-log" class="rg__pre rg__pre--log"></pre>
+
+        <h3 class="rg__h">Findings</h3>
+        <div id="detail-findings"></div>
+
+        <h3 class="rg__h">One log per kind of finding</h3>
+        <p class="cp-hint">
+          Collected from the image after the run. Each line is <code>time &lt;TAB&gt; kind &lt;TAB&gt; detail</code>, ready for a
+          spreadsheet. Use them to check what the script caught — and what it missed.
+        </p>
+        <label class="rg__select">
+          <span>File</span>
+          <select id="detail-categories"></select>
+        </label>
+        <pre id="detail-logfile" class="rg__pre rg__pre--log"></pre>
+      </section>
+    </div>
+
+    <p class="cp-hint">
+      Nothing here replaces the round itself: use it to rehearse, to compare Audit and Apply, and to see the things a script
+      cannot fix. The checklists and the field cards are one click away from the{' '}
+      <a href={withBase('/toolkit/')}>Toolkit dashboard</a>, and script downloads are on{' '}
+      <a href={withBase('/downloads/')}>Download the scripts</a>.
+    </p>
+  </div>
+</StarlightPage>
+
+<script>
+  import '../scripts/range';
+</script>
+
+<style>
+  .rg {
+    display: grid;
+    gap: 1.25rem;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .rg > * {
+    min-width: 0;
+  }
+  .rg__lead {
+    margin: 0;
+    color: var(--sl-color-gray-2);
+  }
+  .rg__steps {
+    display: grid;
+    gap: 0.6rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr));
+  }
+  .rg__steps li {
+    display: flex;
+    gap: 0.7rem;
+    padding: 0.8rem 0.9rem;
+    border: 1px solid var(--cp-border);
+    border-radius: var(--cp-radius-sm);
+    background: var(--cp-card);
+  }
+  .rg__n {
+    display: grid;
+    flex: none;
+    place-items: center;
+    width: 1.5rem;
+    height: 1.5rem;
+    border-radius: 50%;
+    background: var(--sl-color-accent);
+    color: var(--sl-color-black);
+    font-size: var(--sl-text-xs);
+    font-weight: 800;
+  }
+  .rg__step-title {
+    margin: 0;
+    color: var(--sl-color-white);
+    font-weight: 700;
+  }
+  .rg__step-text {
+    margin: 0.15rem 0 0;
+    color: var(--sl-color-gray-3);
+    font-size: var(--sl-text-sm);
+  }
+  .rg__setup {
+    padding: 0.85rem 1rem;
+    border: 1px solid var(--cp-border);
+    border-radius: var(--cp-radius-sm);
+    background: var(--cp-card);
+  }
+  .rg__setup summary {
+    color: var(--sl-color-accent);
+    font-weight: 650;
+    cursor: pointer;
+  }
+  .rg__setup-label {
+    margin: 0.9rem 0 0.3rem;
+    color: var(--sl-color-gray-3);
+    font-size: var(--sl-text-xs);
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  .rg__card {
+    padding: 1.1rem 1.2rem;
+    border: 1px solid var(--cp-border);
+    border-radius: var(--cp-radius);
+    background: var(--cp-card);
+  }
+  .rg__card h2 {
+    margin: 0 0 0.6rem;
+    color: var(--sl-color-white);
+    font-size: var(--sl-text-lg);
+    font-weight: 750;
+  }
+  .rg__card-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .rg__card-head h2 {
+    margin: 0;
+  }
+  .rg__form {
+    display: grid;
+    gap: 0.7rem;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+    align-items: end;
+  }
+  .rg label,
+  .rg__select {
+    display: grid;
+    gap: 0.25rem;
+    font-size: var(--sl-text-sm);
+  }
+  .rg label > span,
+  .rg__select > span {
+    color: var(--sl-color-gray-3);
+    font-size: var(--sl-text-xs);
+    font-weight: 700;
+  }
+  .rg input,
+  .rg select {
+    width: 100%;
+    padding: 0.45rem 0.6rem;
+    border: 1px solid var(--cp-border);
+    border-radius: var(--cp-radius-sm);
+    background: var(--sl-color-black);
+    color: var(--sl-color-white);
+    font: inherit;
+    font-size: var(--sl-text-sm);
+  }
+  .rg__form-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+    align-items: center;
+  }
+  .rg__status {
+    color: var(--sl-color-gray-3);
+    font-size: var(--sl-text-sm);
+  }
+  .rg__status[data-state='ok'] {
+    color: var(--sl-color-green-high, #6ddba0);
+  }
+  .rg__status[data-state='error'] {
+    color: var(--sl-color-red-high, #ff8f8f);
+  }
+  .rg__msg {
+    margin: 0;
+    padding: 0.7rem 0.9rem;
+    border: 1px solid var(--cp-border);
+    border-left: 3px solid var(--sl-color-accent);
+    border-radius: var(--cp-radius-sm);
+    background: var(--cp-card);
+    font-size: var(--sl-text-sm);
+  }
+  .rg__msg[data-kind='error'] {
+    border-left-color: var(--sl-color-red-high, #ff8f8f);
+  }
+  .rg__msg[data-kind='ok'] {
+    border-left-color: var(--sl-color-green-high, #6ddba0);
+  }
+  .rg__grid {
+    display: grid;
+    gap: 0.7rem;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr));
+  }
+  .rg__wide {
+    grid-column: 1 / -1;
+  }
+  .rg__check {
+    display: flex;
+    flex-direction: row;
+    gap: 0.45rem;
+    align-items: center;
+  }
+  .rg__check input {
+    width: auto;
+  }
+  .rg__form--add {
+    margin-bottom: 0.4rem;
+  }
+  .rg__sessions {
+    display: grid;
+    gap: 0.6rem;
+  }
+  .rg__screen {
+    margin: 0.6rem 0 0;
+  }
+  .rg__screen img {
+    width: 100%;
+    border: 1px solid var(--cp-border);
+    border-radius: var(--cp-radius-sm);
+    background: #000;
+    image-rendering: pixelated;
+  }
+  .rg-session {
+    display: grid;
+    gap: 0.3rem;
+    padding: 0.7rem 0.85rem;
+    border: 1px solid var(--cp-border);
+    border-radius: var(--cp-radius-sm);
+    background: var(--sl-color-black);
+  }
+  .rg-session__head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: center;
+    justify-content: space-between;
+    color: var(--sl-color-white);
+  }
+  .rg__images {
+    display: grid;
+    gap: 0.7rem;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr));
+  }
+  .rg-image {
+    display: grid;
+    gap: 0.45rem;
+    padding: 0.85rem 0.95rem;
+    border: 1px solid var(--cp-border);
+    border-radius: var(--cp-radius-sm);
+    background: var(--sl-color-black);
+  }
+  .rg-image__head {
+    display: flex;
+    gap: 0.6rem;
+    align-items: flex-start;
+    justify-content: space-between;
+  }
+  .rg-image__title {
+    margin: 0;
+    color: var(--sl-color-white);
+    font-size: var(--sl-text-base);
+    font-weight: 750;
+  }
+  .rg-image__os,
+  .rg-image__notes {
+    margin: 0.1rem 0 0;
+    color: var(--sl-color-gray-3);
+    font-size: var(--sl-text-xs);
+  }
+  .rg-actions,
+  .rg__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+  }
+  .rg-bar {
+    height: 0.35rem;
+  }
+  .rg__table-wrap {
+    overflow-x: auto;
+  }
+  .rg-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--sl-text-sm);
+  }
+  .rg-table th,
+  .rg-table td {
+    padding: 0.4rem 0.5rem;
+    border-bottom: 1px solid var(--cp-border);
+    text-align: left;
+    vertical-align: top;
+  }
+  .rg-table th {
+    color: var(--sl-color-gray-3);
+    font-size: var(--sl-text-xs);
+    font-weight: 700;
+    white-space: nowrap;
+  }
+  .rg-table td {
+    color: var(--sl-color-gray-2);
+  }
+  .rg-table--runs tbody tr[data-run] {
+    cursor: pointer;
+  }
+  .rg-table--runs tbody tr[data-run]:hover {
+    background: var(--cp-card-hover);
+  }
+  .rg-run__mode {
+    margin-left: 0.4rem;
+    color: var(--sl-color-gray-3);
+    font-size: var(--sl-text-xs);
+  }
+  .rg-run__actions {
+    text-align: right;
+  }
+  .rg-muted {
+    color: var(--sl-color-gray-3);
+    font-size: var(--sl-text-xs);
+  }
+  .rg__meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    align-items: center;
+    margin-bottom: 0.4rem;
+    font-size: var(--sl-text-sm);
+  }
+  .rg-error {
+    flex-basis: 100%;
+    margin: 0.2rem 0 0;
+    color: var(--sl-color-red-high, #ff8f8f);
+    font-size: var(--sl-text-sm);
+  }
+  .rg__h {
+    margin: 1.1rem 0 0.4rem;
+    color: var(--sl-color-white);
+    font-size: var(--sl-text-base);
+    font-weight: 700;
+  }
+  .rg__pre {
+    max-height: 26rem;
+    margin: 0.3rem 0 0;
+    padding: 0.7rem 0.85rem;
+    overflow: auto;
+    border: 1px solid var(--cp-border);
+    border-radius: var(--cp-radius-sm);
+    background: var(--sl-color-black);
+    color: var(--sl-color-white);
+    font-family: var(--sl-font-mono);
+    font-size: var(--sl-text-xs);
+    line-height: 1.55;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .rg__pre--log {
+    max-height: 22rem;
+    min-height: 6rem;
+  }
+  .rg__select {
+    max-width: 28rem;
+    margin-top: 0.5rem;
+  }
+  .rg__counts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin: 0.3rem 0 0.6rem;
+  }
+  .rg-count {
+    display: inline-flex;
+    gap: 0.15rem;
+    align-items: center;
+    font-size: var(--sl-text-sm);
+  }
+  .rg-pill {
+    text-transform: none;
+  }
+</style>

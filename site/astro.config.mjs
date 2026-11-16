@@ -119,6 +119,7 @@ export default defineConfig({
             { label: 'Command finder', link: '/tools/commands/' },
             { label: 'Forensics helper', link: '/tools/forensics/' },
             { label: 'Download the scripts', link: '/downloads/' },
+            { label: 'Practice range', link: '/range/' },
           ],
         },
         {
