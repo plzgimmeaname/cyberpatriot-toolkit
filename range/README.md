@@ -181,8 +181,10 @@ Archives and formats handled: `.zip`, `.7z`, `.tar`, `.tar.gz`/`.tgz`, `.tar.xz`
 
 **Passwords:**
 
-* Plain ZIP passwords (ZipCrypto, what `zip -e` and most portals produce) use the
-  Python standard library: nothing extra to install.
+* Plain ZIP passwords (ZipCrypto, what `zip -e` and most portals produce) are unpacked by
+  the system **`unzip`** (preinstalled on macOS and most Linux systems), which runs at native
+  speed. Without `unzip` the agent falls back to Python's own decryption, which manages only
+  ~2 MB/s: a 20 GB image would take hours. Install `unzip` or 7-Zip for big images.
 * AES-encrypted ZIPs, `.7z` and `.rar` need `7z`/`7zz`/`7za` (`p7zip-full` on
   Debian/Ubuntu) or `unar` on the range host. Without it the pull log says which
   program to install; the download is kept so you can retry.
@@ -224,6 +226,18 @@ Why not run the VM inside the browser (v86, CheerpX, WebVM)? Those WebAssembly
 emulators handle small Linux images; a multi-GB Windows 11 or Mint image would
 be unusably slow and would have to be downloaded into the page. Streaming the
 real VM from QEMU is the practical way to get "the VM in the browser".
+
+## Big images: what "Pulling" means
+
+A real practice image is many gigabytes and goes through three slow steps. The card shows
+which one it is in, with a percentage and the time spent, and the page keeps updating for as
+long as it takes: **downloading** (checksum verified as it arrives) → **unpacking** → **converting to
+qcow2** (only for `.vmdk`/`.vhdx`/raw disks; the longest step on a large image). Each step
+writes to a `.part` file or folder and renames it when finished, so an interrupted pull never
+leaves a half-written disk behind. If the agent is closed during a pull, the card says so
+after the restart and **Pull** continues from the finished steps instead of saying "pulling"
+forever. When *Boot it when the download finishes* is ticked, the VM boots by itself and the
+page opens its desktop.
 
 ## What a run does
 

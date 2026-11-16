@@ -27,6 +27,8 @@ import re
 import shutil
 import subprocess
 import tarfile
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -211,13 +213,55 @@ def disk_format(path: Path) -> str:
     return {"qcow2": "qcow2", "qcow": "qcow2", "vmdk": "vmdk", "vhdx": "vhdx", "vhd": "vpc", "raw": "raw", "img": "raw"}.get(ext, "qcow2")
 
 
-def _safe_extract_zip(zf: zipfile.ZipFile, dest: Path) -> None:
+def gib(n: float) -> str:
+    return f"{n / (1 << 30):.1f} GiB" if n >= (1 << 30) else f"{n / (1 << 20):.0f} MiB"
+
+
+class Progress:
+    """Throttled progress for long steps: percent for the bar, a sentence for the card, a line in the pull log."""
+
+    def __init__(self, update, log, phase: str):
+        self.update, self.log, self.phase = update, log, phase
+        self.started = time.time()
+        self._last = 0.0
+        self._last_pct = -1
+
+    def tick(self, pct: float | None, text: str, force: bool = False) -> None:
+        now = time.time()
+        if not force and now - self._last < 1.0:
+            return
+        self._last = now
+        shown = int(pct) if pct is not None else None
+        self.update(shown, f"{self.phase}: {text} · {int(now - self.started)}s")
+        if shown is not None and shown // 10 != self._last_pct // 10:
+            self._last_pct = shown
+            self.log(f"{self.phase} {shown}% ({text})")
+
+
+def _safe_extract_zip(zf: zipfile.ZipFile, dest: Path, progress: "Progress | None" = None) -> None:
     root = dest.resolve()
-    for member in zf.infolist():
+    infos = zf.infolist()
+    for member in infos:
         target = (dest / member.filename).resolve()
         if not str(target).startswith(str(root)):
             raise CatalogError(f"archive member escapes the folder: {member.filename}")
-    zf.extractall(dest)
+    total = sum(i.file_size for i in infos) or 1
+    done = 0
+    for member in infos:  # streamed: a multi-GB disk never sits in memory, and the card shows how far it got
+        target = dest / member.filename
+        if member.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with zf.open(member) as src, target.open("wb") as out:
+            while True:
+                block = src.read(1 << 20)
+                if not block:
+                    break
+                out.write(block)
+                done += len(block)
+                if progress is not None:
+                    progress.tick(done * 100 / total, f"{gib(done)} of {gib(total)}")
 
 
 def _safe_extract_tar(tf: tarfile.TarFile, dest: Path) -> None:
@@ -231,6 +275,40 @@ def _safe_extract_tar(tf: tarfile.TarFile, dest: Path) -> None:
     tf.extractall(dest)
 
 
+def _check_zip_members(zf: zipfile.ZipFile, dest: Path) -> None:
+    """Refuse paths that escape the folder and symbolic links, before any external tool touches the archive."""
+    root = dest.resolve()
+    for member in zf.infolist():
+        if not str((dest / member.filename).resolve()).startswith(str(root)):
+            raise CatalogError(f"archive member escapes the folder: {member.filename}")
+        if (member.external_attr >> 16) & 0o170000 == 0o120000:
+            raise CatalogError(f"archive contains a link, refusing to extract: {member.filename}")
+
+
+def _extract_with_unzip(zf: zipfile.ZipFile, archive: Path, dest: Path, password: str, log, progress: "Progress | None") -> None:
+    """Password-protected ZIPs: the system `unzip` is native speed; Python's own decryption manages ~2 MB/s."""
+    unzip = shutil.which("unzip")
+    assert unzip
+    _check_zip_members(zf, dest)
+    total = sum(i.file_size for i in zf.infolist()) or 1
+    log(f"unpacking {archive.name} with unzip (password supplied)")
+    # The password is visible in `ps` on this computer while it runs, like the 7-Zip path.
+    proc = subprocess.Popen([unzip, "-o", "-q", "-P", password, str(archive), "-d", str(dest)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    holder: dict = {}
+    reader = threading.Thread(target=lambda: holder.setdefault("out", proc.communicate()[0]), daemon=True)
+    reader.start()
+    while reader.is_alive():
+        reader.join(1.0)
+        if progress is not None:
+            written = sum(p.stat().st_size for p in dest.rglob("*") if p.is_file())
+            progress.tick(min(written * 100 / total, 99), f"{gib(written)} of {gib(total)}")
+    output = (holder.get("out") or "").strip()
+    if proc.returncode != 0:
+        if proc.returncode == 82 or "password" in output.lower():  # Info-ZIP: 82 = bad password
+            raise CatalogError("wrong unzip password")
+        raise CatalogError(f"unzip failed ({proc.returncode}): {output.splitlines()[-1] if output else 'no output'}")
+
+
 def _extractor() -> str | None:
     for name in EXTRACTORS:
         found = shutil.which(name)
@@ -239,7 +317,7 @@ def _extractor() -> str | None:
     return None
 
 
-def _extract_with_7z(archive: Path, dest: Path, password: str | None, log) -> None:
+def _extract_with_7z(archive: Path, dest: Path, password: str | None, log, progress: "Progress | None" = None) -> None:
     tool = _extractor()
     if not tool:
         raise CatalogError(
@@ -260,7 +338,17 @@ def _extract_with_7z(archive: Path, dest: Path, password: str | None, log) -> No
             cmd += [f"-p{password}"]
     cmd.append(str(archive))
     log(f"unpacking {archive.name} with {name}" + (" (password supplied)" if password else ""))
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    # No percentage from the tool, so show how much has been written so far.
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    holder: dict = {}
+    reader = threading.Thread(target=lambda: holder.setdefault("out", proc.communicate()[0]), daemon=True)
+    reader.start()
+    while reader.is_alive():
+        reader.join(1.0)
+        if progress is not None:
+            written = sum(p.stat().st_size for p in dest.rglob("*") if p.is_file())
+            progress.tick(None, f"{gib(written)} written")
+    result = type("R", (), {"returncode": proc.returncode, "stdout": holder.get("out") or "", "stderr": ""})
     output = (result.stdout + result.stderr).strip()
     if result.returncode != 0 or re.search(r"wrong password|password is incorrect|Cannot open encrypted", output, re.I):
         raise CatalogError(f"unpacking failed ({result.returncode}): {output.splitlines()[-1] if output else 'no output'}")
@@ -269,7 +357,7 @@ def _extract_with_7z(archive: Path, dest: Path, password: str | None, log) -> No
         raise CatalogError("unpacking produced no files - the archive password is probably wrong")
 
 
-def extract_archive(archive: Path, dest: Path, password: str | None, log) -> list[Path]:
+def extract_archive(archive: Path, dest: Path, password: str | None, log, progress: "Progress | None" = None) -> list[Path]:
     """Unpack .zip/.tar/.ova/.7z/.rar, decrypting with `password` when needed."""
     dest.mkdir(parents=True, exist_ok=True)
     if zipfile.is_zipfile(archive):
@@ -281,12 +369,16 @@ def extract_archive(archive: Path, dest: Path, password: str | None, log) -> lis
                 raise CatalogError("this archive is password protected: paste the unzip password and try again")
             if aes:
                 log("this ZIP uses AES encryption; stdlib cannot read it, using 7-Zip")
-                _extract_with_7z(archive, dest, password, log)
+                _extract_with_7z(archive, dest, password, log, progress)
+                return list_files(dest)
+            if encrypted and shutil.which("unzip"):
+                _extract_with_unzip(zf, archive, dest, password, log, progress)
                 return list_files(dest)
             if encrypted:
+                log("unzip was not found: using Python's slow built-in decryption (about 2 MB/s). Install unzip or 7-Zip for big images.")
                 zf.setpassword(password.encode())
             try:
-                _safe_extract_zip(zf, dest)
+                _safe_extract_zip(zf, dest, progress)
             except RuntimeError as exc:
                 if "password" in str(exc).lower():
                     raise CatalogError("wrong unzip password") from exc
@@ -297,7 +389,7 @@ def extract_archive(archive: Path, dest: Path, password: str | None, log) -> lis
             _safe_extract_tar(tf, dest)
         return list_files(dest)
     # .7z / .rar / anything else: one of the external extractors knows it.
-    _extract_with_7z(archive, dest, password, log)
+    _extract_with_7z(archive, dest, password, log, progress)
     return list_files(dest)
 
 
@@ -327,6 +419,15 @@ class Catalog:
             self.state = json.loads(self.state_file.read_text())
         except (OSError, json.JSONDecodeError):
             self.state = {}
+        # A pull cannot survive the agent closing: do not leave it saying "pulling" forever.
+        for image_id, st in list(self.state.items()):
+            if st.get("state") == "pulling":
+                self.save_state(
+                    image_id,
+                    state="error",
+                    detail="the agent was closed during this download; press Pull again (the finished part is reused)",
+                    error="interrupted",
+                )
 
     # -- queries ------------------------------------------------------------
     def _load_added(self) -> list[dict]:
@@ -452,15 +553,27 @@ class Catalog:
             disk = archive
             if archive.name.lower().endswith(ARCHIVE_SUFFIXES):
                 extract_dir = dest / "unpacked"
-                if not list_files(extract_dir):
-                    self.save_state(image_id, state="pulling", progress=100, detail="unpacking")
+                if not (extract_dir / ".complete").exists():
+                    # Unpack beside the final folder and rename when finished, so an interrupted
+                    # unpack is never mistaken for a complete one.
+                    partial = dest / "unpacked.part"
+                    shutil.rmtree(partial, ignore_errors=True)
+                    shutil.rmtree(extract_dir, ignore_errors=True)
                     log(f"unpacking {archive.name}")
-                    extract_archive(archive, extract_dir, password, log)
+                    progress = Progress(
+                        lambda pct, text: self.save_state(image_id, state="pulling", progress=pct if pct is not None else 100, detail=text),
+                        log,
+                        "unpacking",
+                    )
+                    self.save_state(image_id, state="pulling", progress=0, detail="unpacking")
+                    extract_archive(archive, partial, password, log, progress)
+                    partial.rename(extract_dir)
+                    (extract_dir / ".complete").write_text(_now())
                 disk = pick_disk(list_files(extract_dir), (entry.get("disk") or {}).get("file"))
 
             fmt = (entry.get("disk") or {}).get("format") or disk_format(disk)
             if fmt != "qcow2":
-                disk = self._convert_to_qcow2(disk, dest, log)
+                disk = self._convert_to_qcow2(disk, dest, log, image_id)
                 fmt = "qcow2"
             size = disk.stat().st_size
             self.save_state(
@@ -527,20 +640,55 @@ class Catalog:
             log("no checksum given for this image: the download was NOT verified")
         part.replace(target)
 
-    def _convert_to_qcow2(self, disk: Path, dest: Path, log) -> Path:
+    def _convert_to_qcow2(self, disk: Path, dest: Path, log, image_id: str = "") -> Path:
         qemu_img = shutil.which("qemu-img")
         if not qemu_img:
             raise CatalogError(
-                "this image is not qcow2 and qemu-img is not installed. Install qemu-utils "
-                "(Debian/Ubuntu: sudo apt install qemu-utils) or convert the disk yourself."
+                "this image is not qcow2 and qemu-img is not installed. Install QEMU "
+                "(macOS: brew install qemu; Debian/Ubuntu: sudo apt install qemu-utils) or convert the disk yourself."
             )
         target = dest / (disk.stem + ".qcow2")
         if target.exists():
             return target
-        log(f"converting {disk.name} -> {target.name} (one time, can take a few minutes)")
-        result = subprocess.run([qemu_img, "convert", "-O", "qcow2", str(disk), str(target)], capture_output=True, text=True)
-        if result.returncode != 0:
-            raise CatalogError(f"qemu-img convert failed: {result.stderr.strip()}")
+        partial = target.with_suffix(".qcow2.part")
+        partial.unlink(missing_ok=True)
+        log(f"converting {disk.name} -> {target.name} (one time, can take many minutes for a large image)")
+        progress = Progress(
+            lambda pct, text: self.save_state(image_id, state="pulling", progress=pct if pct is not None else 0, detail=text),
+            log,
+            "converting to qcow2",
+        )
+        self.save_state(image_id, state="pulling", progress=0, detail="converting to qcow2")
+        proc = subprocess.Popen(
+            [qemu_img, "convert", "-p", "-O", "qcow2", str(disk), str(partial)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            errors="replace",
+        )
+        tail = ""
+        buffer = ""
+        assert proc.stdout is not None
+        while True:
+            char = proc.stdout.read(1)
+            if not char:
+                break
+            if char in "\r\n":
+                found = re.search(r"\(([\d.]+)/100%\)", buffer)
+                if found:
+                    pct = float(found.group(1))
+                    progress.tick(pct, f"{pct:.0f}%")
+                elif buffer.strip():
+                    tail = buffer.strip()
+                buffer = ""
+            else:
+                buffer += char
+        proc.stdout.close()
+        proc.wait()
+        if proc.returncode != 0:
+            partial.unlink(missing_ok=True)
+            raise CatalogError(f"qemu-img convert failed: {tail or 'exit code ' + str(proc.returncode)}")
+        partial.rename(target)
         return target
 
 

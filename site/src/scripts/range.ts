@@ -114,6 +114,9 @@ const state = {
   session: null as string | null,
   consoleOffset: 0,
   sessionTimer: 0,
+  imageTimer: 0,
+  seenSessions: new Set<string>(),
+  sessionsPrimed: false,
   screenTimer: 0,
   screenUrl: '',
   rfb: null as null | { disconnect(): void; sendCtrlAltDel(): void; scaleViewport: boolean },
@@ -469,6 +472,11 @@ async function refreshImages(): Promise<void> {
   const data = await api<{ images: RangeImage[] }>('/api/images');
   state.images = data.images;
   renderImages();
+  // A big image takes a long time to download, unpack and convert: keep the cards moving for as long as it does.
+  window.clearTimeout(state.imageTimer);
+  if (state.connected && state.images.some((image) => image.state === 'pulling')) {
+    state.imageTimer = window.setTimeout(() => void refreshImages().catch(() => undefined), 2000);
+  }
 }
 
 async function refreshRuns(): Promise<void> {
@@ -588,6 +596,14 @@ async function refreshSessions(): Promise<void> {
   state.sessions = data.sessions;
   renderSessions();
   renderImages();
+  const firstLook = !state.sessionsPrimed;
+  state.sessionsPrimed = true;
+  for (const sess of state.sessions) {
+    if (state.seenSessions.has(sess.id)) continue;
+    state.seenSessions.add(sess.id);
+    // A VM that appeared since the last look (for example booted after a download that this tab stopped watching): show it.
+    if (!firstLook && !state.session && (sess.state === 'running' || sess.state === 'booting')) void selectSession(sess.id);
+  }
   if (state.session) {
     const current = state.sessions.find((sess) => sess.id === state.session);
     const desktop = byId<HTMLElement>('session-desktop-wrap');
@@ -843,7 +859,7 @@ async function stopSession(id: string): Promise<void> {
 }
 
 async function watchImage(id: string, autoBoot = false): Promise<void> {
-  for (let i = 0; i < 150; i++) {
+  for (;;) {
     await new Promise((resolve) => window.setTimeout(resolve, 2000));
     try {
       await refreshImages();
@@ -871,7 +887,6 @@ async function watchImage(id: string, autoBoot = false): Promise<void> {
       return;
     }
   }
-  message('The download is still going in the background — watch the image card.', 'info');
 }
 
 const HASH_LENGTHS: Record<number, string> = { 32: 'MD5', 40: 'SHA-1', 64: 'SHA-256', 128: 'SHA-512' };

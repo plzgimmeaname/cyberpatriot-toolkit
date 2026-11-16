@@ -79,6 +79,18 @@ class AddImageTest(unittest.TestCase):
         self.range = agent.Range(
             argparse.Namespace(repo=str(REPO), data=str(self.data), catalog=str(self.tmp / "images.json"))
         )
+        self.addCleanup(self._stop_every_vm)
+
+    def _stop_every_vm(self) -> None:
+        """A test that boots a VM must never leave a QEMU running (each one reserves RAM)."""
+        for sid in list(self.range.sessions):
+            try:
+                self.range.stop_session(sid)
+            except Exception:
+                pass
+        deadline = time.time() + 15
+        while self.range.session_cancels and time.time() < deadline:
+            time.sleep(0.1)
 
     def _add(self, name: str, password: str) -> dict:
         return self.range.add_image(
@@ -230,6 +242,59 @@ class PackageTest(unittest.TestCase):
         self.assertIn('"ok": true', health)
         unpacked = list((tmp / "data" / "app").glob("*/scripts/linux/harden.sh"))
         self.assertEqual(len(unpacked), 1, "the hardening scripts must be unpacked next to the agent")
+
+
+class PullProgressTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def _catalog(self) -> "catalog.Catalog":
+        return catalog.Catalog(self.tmp / "none.json", self.tmp / "data")
+
+    @unittest.skipUnless(shutil.which("qemu-img"), "qemu-img converts the vmdk")
+    def test_a_vmdk_is_converted_with_progress_and_no_partial_files(self) -> None:
+        disk = self.tmp / "Win_Practice.vmdk"
+        subprocess.run(["qemu-img", "create", "-q", "-f", "vmdk", "-o", "subformat=monolithicFlat", str(disk), "64M"], check=True)
+        cat = self._catalog()
+        cat.add_image({
+            "id": "vmdk1", "name": "vmdk", "family": "linux", "script": "linux",
+            "source": {"kind": "local", "path": str(self.tmp / "Win_Practice.vmdk")},
+            "guest": {"user": "x"},
+        })
+        states: list[dict] = []
+        original = cat.save_state
+        cat.save_state = lambda image_id, **fields: (states.append(dict(fields)), original(image_id, **fields))[1]  # type: ignore[method-assign]
+        cat.pull("vmdk1", lambda text: None)
+        self.assertEqual(cat.state_of("vmdk1")["state"], "ready")
+        self.assertTrue(any("converting" in str(f.get("detail", "")) for f in states))
+        folder = cat.image_dir("vmdk1")
+        self.assertEqual([p.name for p in folder.glob("*.part")], [])
+
+    def test_an_interrupted_unpack_is_not_reused(self) -> None:
+        cat = self._catalog()
+        zip_path = self.tmp / "img.zip"
+        payload = self.tmp / "disk.qcow2"
+        payload.write_bytes(b"x" * (2 << 20))
+        with zipfile.ZipFile(zip_path, "w") as archive:
+            archive.write(payload, "disk.qcow2")
+        cat.add_image({
+            "id": "zip1", "name": "zip", "family": "linux", "script": "linux",
+            "source": {"kind": "local", "path": str(zip_path)}, "guest": {"user": "x"},
+        })
+        stale = cat.image_dir("zip1") / "unpacked"
+        stale.mkdir(parents=True)
+        (stale / "disk.qcow2").write_bytes(b"truncated")  # what a killed unpack leaves behind, with no .complete marker
+        cat.pull("zip1", lambda text: None)
+        ready = Path(cat.state_of("zip1")["disk"])
+        self.assertGreaterEqual(ready.stat().st_size, 2 << 20)
+
+    def test_a_pull_cut_off_by_a_restart_does_not_say_pulling_forever(self) -> None:
+        cat = self._catalog()
+        cat.save_state("ghost", state="pulling", progress=40, detail="downloading")
+        again = catalog.Catalog(self.tmp / "none.json", self.tmp / "data")
+        self.assertEqual(again.state_of("ghost")["state"], "error")
+        self.assertIn("press Pull again", again.state_of("ghost")["detail"])
 
 
 class ChecksumParseTest(unittest.TestCase):
