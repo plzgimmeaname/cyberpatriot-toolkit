@@ -196,6 +196,7 @@ function pageRoutes(dir = join(SITE, 'src/pages'), prefix = '') {
 
 const routes = new Set([
   '/',
+  '/about/', // a Starlight content page: not in src/pages and not in docs/
   ...Object.values(pages).map((p) => p.route),
   ...pageRoutes().filter((r) => r !== '/404/'),
   // The field cards are one dynamic route; list them explicitly.
