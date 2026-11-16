@@ -1,0 +1,89 @@
+{
+  "$comment": [
+    "Copy this file to range/images.json and edit it. Nothing here points at a CyberPatriot download:",
+    "the competition images are distributed to coaches through the CyberPatriot portal, not public URLs.",
+    "Put the ZIP/OVA you downloaded on this computer (source.kind = local) or on your own server",
+    "(source.kind = url). Pull checks the SHA-256 when you give one, then boots a throw-away copy.",
+    "Prepare each image ONCE as a template: install your SSH key (Linux/FreeBSD) or enable WinRM",
+    "(Windows), then shut it down. The range never modifies the base disk."
+  ],
+  "images": [
+    {
+      "id": "cp-mint21",
+      "name": "Linux Mint 21 (practice)",
+      "family": "linux",
+      "osName": "Linux Mint 21.3",
+      "script": "linux",
+      "source": {
+        "kind": "local",
+        "path": "~/CyberPatriot/Mint21_Practice.zip",
+        "sha256": ""
+      },
+      "disk": { "file": "Mint21_Practice.vmdk", "format": "vmdk" },
+      "guest": {
+        "user": "student",
+        "sshPort": 22,
+        "keyFile": "~/.ssh/rampart_mint",
+        "sudo": true,
+        "ramMb": 4096,
+        "cpus": 2
+      },
+      "notes": "Template: added ~/.ssh/authorized_keys for the range key and enabled openssh-server."
+    },
+    {
+      "id": "cp-debian12",
+      "name": "Debian 12 (practice)",
+      "family": "linux",
+      "osName": "Debian 12",
+      "script": "linux",
+      "source": {
+        "kind": "url",
+        "url": "https://files.example.org/cyberpatriot/Debian12_Practice.qcow2",
+        "fileName": "Debian12_Practice.qcow2",
+        "sha256": ""
+      },
+      "disk": { "format": "qcow2" },
+      "guest": { "user": "student", "sshPort": 22, "keyFile": "~/.ssh/rampart_debian", "sudo": true },
+      "notes": "A plain qcow2 on the coach's file server. Fill in sha256 so a damaged download cannot boot."
+    },
+    {
+      "id": "cp-win11",
+      "name": "Windows 11 (practice)",
+      "family": "windows",
+      "osName": "Windows 11",
+      "script": "windows",
+      "source": {
+        "kind": "url",
+        "url": "https://files.example.org/cyberpatriot/Windows11_Practice.zip",
+        "sha256": ""
+      },
+      "disk": { "file": "Windows11.vhdx", "format": "vhdx" },
+      "guest": {
+        "user": "Administrator",
+        "passwordEnv": "RAMPART_WIN_PASSWORD",
+        "winrmPort": 5985,
+        "ramMb": 6144,
+        "cpus": 2,
+        "generation": 2
+      },
+      "notes": "Template: WinRM over HTTP enabled for the range host's subnet, Administrator password set and stored in RAMPART_WIN_PASSWORD."
+    },
+    {
+      "id": "manual-server2022",
+      "name": "Windows Server 2022 (VM I started myself)",
+      "family": "windows",
+      "osName": "Windows Server 2022",
+      "script": "windows",
+      "provider": "attach",
+      "source": { "kind": "local", "path": "~/CyberPatriot/Server2022.vhdx" },
+      "disk": { "format": "vhdx" },
+      "guest": {
+        "host": "192.168.56.20",
+        "user": "Administrator",
+        "passwordEnv": "RAMPART_WIN_PASSWORD",
+        "winrmPort": 5985
+      },
+      "notes": "provider attach: the agent does not boot anything, it connects to the VM you already started in VirtualBox/VMware."
+    }
+  ]
+}

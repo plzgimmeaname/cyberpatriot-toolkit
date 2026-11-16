@@ -74,6 +74,27 @@ sudo cat /root/cyberpatriot/findings-*.txt      # your to-do list
 sudo less /root/cyberpatriot/harden-*.log       # everything that happened (q to quit)
 ```
 
+`/root/cyberpatriot/logs-<date>/` holds **one file per kind of finding**, so you can check one thing at a time instead of
+reading one long log. Each line is `time <TAB> kind <TAB> detail`, which opens in a spreadsheet:
+
+| File | What it answers |
+|---|---|
+| `01-readme.txt` | Which admins, users and critical services the run compared against |
+| `02-users.txt` | Every account, its password state, groups and every sudo rule |
+| `03-apps-installed.txt` | Every installed app and where it came from: apt, snap, flatpak, pip/npm/gem, downloaded installers, repositories and shell history |
+| `04-apps-removed.txt` | Every app this run removed (in Audit mode: would remove) |
+| `05-files-found.txt` | Media, password lists, packet captures, keys, hidden/executable files in temp folders |
+| `06-files-deleted.txt` | Every file deleted, with its size, owner and mode (in Audit mode: would delete) |
+| `07-open-ports.txt` | Every listening socket, its address, and the program and PID that owns it |
+| `08-processes.txt` | Every process, plus flags for ones running from `/tmp`, `/dev/shm`, a deleted program file, or as an unauthorized user |
+| `09-services.txt` | Services that are running or enabled |
+| `10-persistence.txt` | Cron jobs, systemd units, start-up files, SSH keys, autostart entries |
+| `11-connections.txt` | Established connections (a reverse shell is outgoing) |
+
+`00-index.txt` lists them with line counts. The same results are also written to `findings-<date>.json` for tools (the
+**Practice range** page reads it directly). Run `--audit` first: every deletion and removal is logged there as
+"would-delete" / "would-remove" before you apply it.
+
 ### Undoing a change
 Every edited file is copied to `/root/cyberpatriot/backups/<date-time>/` with its full path. To put one back:
 ```bash

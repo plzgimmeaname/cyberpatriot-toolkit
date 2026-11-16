@@ -99,6 +99,12 @@ check "automatic updates on"                     'grep -q "Unattended-Upgrade \"
 check "held package released"                    '[ -z "$(apt-mark showhold)" ]'
 check "audit rules installed"                    '[ -f /etc/audit/rules.d/50-cyberpatriot.rules ]'
 check "backups were made"                        'ls /root/cyberpatriot/backups/*/etc/ssh/sshd_config'
+# logs by kind (v2.2): one file per finding kind, and every deletion/removal recorded
+check "per-kind logs written"                     'ls /root/cyberpatriot/logs-*/03-apps-installed.txt >/dev/null 2>&1'
+check "deleted media recorded in the deletion log" 'grep -q "song\.mp3" /root/cyberpatriot/logs-*/06-files-deleted.txt'
+check "removed package recorded"                  'grep -q "netcat-traditional" /root/cyberpatriot/logs-*/04-apps-removed.txt'
+check "open ports log created"                    'grep -q "Every listening port" /root/cyberpatriot/logs-*/07-open-ports.txt'
+check "findings JSON written"                     'grep -q "\"results\"" /root/cyberpatriot/findings-*.json'
 
 echo
 echo "verify: $pass passed, $fail failed"

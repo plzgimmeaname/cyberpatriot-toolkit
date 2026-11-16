@@ -28,7 +28,7 @@
 
 if [ -z "${BASH_VERSION:-}" ]; then echo "Please run this script with bash:  sudo bash $0" >&2; exit 1; fi
 
-SCRIPT_VERSION="2.1.1"
+SCRIPT_VERSION="2.2.0"
 
 # ----------------------------------------------------------------------------
 # Settings (filled in from the command line, the config file, or prompts)
@@ -56,6 +56,8 @@ WORK_DIR="/root/cyberpatriot"
 BACKUP_DIR="$WORK_DIR/backups/$RUN_ID"
 LOG_FILE="$WORK_DIR/harden-$RUN_ID.log"
 REPORT_FILE="$WORK_DIR/findings-$RUN_ID.txt"
+FINDINGS_JSON="$WORK_DIR/findings-$RUN_ID.json"
+LOG_DIR="$WORK_DIR/logs-$RUN_ID"
 
 export DEBIAN_FRONTEND=noninteractive
 # The script reads the output of ufw, aa-status and other tools; in another
@@ -152,6 +154,105 @@ show_list() {
   done
   if (( count > max )); then printf '%s          ... and %d more (full list in %s)%s\n' "$C_DIM" $((count - max)) "$REPORT_FILE" "$C_RST"; fi
   report_detail "$@"
+}
+
+# ----------------------------------------------------------------------------
+# One log file per kind of finding
+#   /root/cyberpatriot/logs-<date>/03-apps-installed.txt, 07-open-ports.txt ...
+# Every data line is   time <TAB> kind <TAB> detail,  so it opens in a
+# spreadsheet and the practice range (range/agent.py) can read it without
+# parsing English. AUDIT mode logs what it WOULD remove as "would-remove".
+# ----------------------------------------------------------------------------
+LOG_TOPICS=(
+  "01-readme|What the README said: the lists every other check compares against"
+  "02-users|Accounts, groups, sudo rules and password settings"
+  "03-apps-installed|Installed software and where it came from: apt, snap, flatpak, pip/npm/gem, installers, repositories"
+  "04-apps-removed|Software this run removed (AUDIT mode: would remove)"
+  "05-files-found|Files that may break policy or hide malware"
+  "06-files-deleted|Files this run deleted (AUDIT mode: would delete)"
+  "07-open-ports|Every listening port and the program that owns it"
+  "08-processes|Every running process, flagging odd locations, owners and names"
+  "09-services|Services and timers, running or not"
+  "10-persistence|Cron, systemd units, start-up files, SSH keys, autostart entries"
+  "11-connections|Established connections and unusual network settings"
+)
+
+log_init() {
+  mkdir -p "$LOG_DIR"
+  local topic name title
+  for topic in "${LOG_TOPICS[@]}"; do
+    name=${topic%%|*}; title=${topic#*|}
+    printf '# %s\n# %s\n# columns: time <TAB> kind <TAB> detail\n' "$title" "$(date)" >"$LOG_DIR/$name.txt"
+  done
+}
+
+# record TOPIC KIND DETAIL...   (TOPIC is one of LOG_TOPICS)
+record() {
+  local topic=$1 kind=$2
+  shift 2
+  printf '%s\t%s\t%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$kind" "$*" >>"$LOG_DIR/$topic.txt" 2>/dev/null
+}
+
+# remove_files "reason" FILE...
+#   Every file is written to 06-files-deleted.txt BEFORE it is removed (with its
+#   size, owner and mode), so a deletion can always be traced - and in AUDIT mode
+#   the same lines say what would have gone.
+remove_files() {
+  local reason=$1
+  shift
+  local kind=deleted f
+  [[ $MODE == audit ]] && kind=would-delete
+  for f in "$@"; do
+    [[ -e $f ]] || continue
+    record 06-files-deleted "$kind" "$reason|$f|$(stat -c '%s bytes %U:%G %a' "$f" 2>/dev/null)"
+  done
+  [[ $# -eq 0 ]] && return 0
+  if [[ $MODE == audit ]]; then result WOULD "Delete $# file(s): $reason"; return 0; fi
+  fix "Deleted $# file(s): $reason" rm -f -- "$@"
+}
+
+json_escape() { printf '%s' "$*" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr -d '\000-\010\013\014\016-\037'; }
+
+# findings-<run>.json: the same results in a form the website and the practice
+# range can read (range/agent.py collects it from the image).
+write_findings_json() {
+  local r status section text first=1
+  {
+    printf '{\n  "tool": "harden.sh",\n  "version": "%s",\n  "run": "%s",\n  "when": "%s",\n' \
+      "$SCRIPT_VERSION" "$RUN_ID" "$(date -Is)"
+    printf '  "host": "%s",\n  "os": "%s",\n  "mode": "%s",\n' \
+      "$(json_escape "$(hostname 2>/dev/null)")" "$(json_escape "$OS_NAME")" "$MODE"
+    printf '  "readme": { "admins": "%s", "users": "%s", "critical": "%s", "user_list_given": %s },\n' \
+      "$(json_escape "$AUTHORIZED_ADMINS")" "$(json_escape "$AUTHORIZED_USERS")" "$(json_escape "$CRITICAL_SERVICES")" \
+      "$([[ $README_USERS_GIVEN -eq 1 ]] && echo true || echo false)"
+    printf '  "logs": "%s",\n  "report": "%s",\n  "results": [\n' "$LOG_DIR" "$REPORT_FILE"
+    for r in "${RESULTS[@]}"; do
+      IFS='|' read -r status section text <<<"$r"
+      [[ $first -eq 1 ]] || printf ',\n'
+      first=0
+      printf '    { "status": "%s", "section": "%s", "text": "%s" }' "$status" "$section" "$(json_escape "$text")"
+    done
+    printf '\n  ]\n}\n'
+  } >"$FINDINGS_JSON"
+}
+
+# 00-index.txt: what each log file holds and how many lines it has.
+write_log_index() {
+  local topic name title n total=0
+  {
+    printf 'CyberPatriot toolkit - run %s (%s, %s)\n' "$RUN_ID" "$MODE" "$OS_NAME"
+    printf 'To-do list (REVIEW/WOULD/FAILED): %s\n' "$REPORT_FILE"
+    printf 'Everything that happened:         %s\n\n' "$LOG_FILE"
+    printf 'One file per kind of finding. Lines are: time <TAB> kind <TAB> detail.\n\n'
+    for topic in "${LOG_TOPICS[@]}"; do
+      name=${topic%%|*}; title=${topic#*|}
+      n=$(grep -cv '^#' "$LOG_DIR/$name.txt" 2>/dev/null); n=${n:-0}
+      printf '%-26s %6s lines  %s\n' "$name.txt" "$n" "$title"
+      total=$((total + n))
+    done
+    printf '%-26s %6s lines  machine-readable copy of the results\n' "findings-$RUN_ID.json" "$(grep -c '"status"' "$FINDINGS_JSON" 2>/dev/null || echo 0)"
+    printf '%-26s %6s lines  TOTAL\n' '' "$total"
+  } | tee "$LOG_DIR/00-index.txt"
 }
 
 # ----------------------------------------------------------------------------
@@ -535,6 +636,11 @@ show_readme_summary() {
   if [[ $README_USERS_GIVEN -eq 0 ]]; then
     warn "No authorized users given: the script will NOT delete or demote anyone."
   fi
+  record 01-readme admins "$AUTHORIZED_ADMINS"
+  record 01-readme users "$AUTHORIZED_USERS"
+  record 01-readme critical-services "$CRITICAL_SERVICES"
+  record 01-readme lists-given "user-list=$README_USERS_GIVEN admin-list=$README_ADMINS_GIVEN"
+  record 01-readme note "every check below compares against these lists; a wrong list here explains a wrong fix"
 }
 
 # ============================================================================
@@ -551,6 +657,17 @@ sec_users() {
   local -a human uid0 hidden
   all_auth=$(normalize_list "$AUTHORIZED_ADMINS $AUTHORIZED_USERS")
   mapfile -t human < <(list_human_users)
+  for u in $(awk -F: '{print $1}' /etc/passwd); do
+    record 02-users account "$u|$(getent passwd "$u" 2>/dev/null | cut -d: -f3,4,6,7)"
+  done
+  local pwline
+  for u in "${human[@]}"; do
+    pwline=$(passwd -S "$u" 2>/dev/null)
+    [[ -n $pwline ]] && record 02-users password "$(awk -v u="$u" '{print u"|"$2"|last-change="$3"|max="$5"|inactive="$7}' <<<"$pwline")"
+  done
+  for u in $(list_human_users); do
+    record 02-users groups "$u|$(id -nG "$u" 2>/dev/null)"
+  done
 
   info "Looking for extra 'root' accounts (UID 0)"
   why "Only root should have user ID 0. A second UID-0 account is a hidden copy of root - a classic backdoor."
@@ -1134,6 +1251,8 @@ sec_services() {
       bad)
         result REVIEW "'$name' is installed ($pkgs) - it is insecure and the README doesn't list it"
         if [[ -n $pkgs ]] && ask "Remove $name completely ($pkgs)?" y; then
+          local sp
+          for sp in $pkgs; do record 04-apps-removed "$([[ $MODE == audit ]] && echo would-remove || echo removed)" "apt|$sp|$name is not in the README"; done
           # shellcheck disable=SC2086
           fix "Removed $name" apt-get "${APT_OPTS[@]}" purge $pkgs
         fi ;;
@@ -1147,6 +1266,8 @@ sec_services() {
         if ask "Stop and disable $name?" y; then
           for u in $any_unit; do unit_masked "$u" || fix "Stopped and disabled $u" systemctl disable --now "$u"; done
           if [[ -n $pkgs ]] && ask "Also uninstall $name ($pkgs)?" n strict; then
+            local sp
+            for sp in $pkgs; do record 04-apps-removed "$([[ $MODE == audit ]] && echo would-remove || echo removed)" "apt|$sp|$name is not in the README"; done
             # shellcheck disable=SC2086
             fix "Removed $name" apt-get "${APT_OPTS[@]}" purge $pkgs
           fi
@@ -1157,7 +1278,14 @@ sec_services() {
   if [[ $HAS_SYSTEMD -eq 1 ]]; then
     local -a running
     mapfile -t running < <(systemctl list-units --type=service --state=running --no-legend --plain 2>/dev/null | awk '{print $1}')
-    result REVIEW "${#running[@]} services are running - skim the list in the report for anything odd"
+    local su
+    while IFS= read -r su; do
+      [[ -n $su ]] && record 09-services running "$su"
+    done < <(systemctl list-units --type=service --state=running --no-legend --plain 2>/dev/null | awk '{print $1"|"$4}')
+    while IFS= read -r su; do
+      [[ -n $su ]] && record 09-services enabled "$su"
+    done < <(systemctl list-unit-files --type=service --state=enabled --no-legend --plain 2>/dev/null | awk '{print $1}')
+    result REVIEW "${#running[@]} services are running - skim the list in $LOG_DIR/09-services.txt for anything odd"
     report_detail "${running[@]}"
   fi
 }
@@ -1165,10 +1293,10 @@ sec_services() {
 # ============================================================================
 # SECTION: Prohibited software
 # ============================================================================
-RE_HACKING='^(john|john-data|hydra|hydra-gtk|aircrack-ng|ophcrack|ophcrack-cli|hashcat|nikto|sqlmap|wireshark|wireshark-qt|wireshark-gtk|wireshark-common|tshark|ettercap-common|ettercap-graphical|ettercap-text-only|kismet|dsniff|metasploit-framework|armitage|nmap|zenmap|ncat|medusa|ncrack|crunch|fcrackzip|pdfcrack|rarcrack|reaver|bully|wifite|bettercap|responder|yersinia|netsniff-ng|masscan|zmap|hping3|crackmapexec|enum4linux|smbmap|nbtscan|gobuster|dirb|dirbuster|wfuzz|ffuf|beef-xss|set|maltego|recon-ng|theharvester|weevely|chntpw|samdump2|bloodhound|python3-impacket|impacket-scripts|netcat-traditional|netcat|cryptcat|cewl|macchanger|proxychains|proxychains4|mitmproxy|sslstrip|driftnet|thc-ipv6|thc-hydra|burpsuite|zaproxy|airgeddon|kismet-plugins|pixiewps|mdk3|mdk4|cowpatty|asleap|fern-wifi-cracker|sipcrack|patator|brutespray|dnsenum|dnsrecon|fierce|wpscan|joomscan|commix|routersploit|exploitdb|social-engineer-toolkit|veil|shellter|backdoor-factory|nishang|powersploit|mimikatz|lazagne|freeciv-server)$'
-RE_GAMES='^(aisleriot|gnome-mines|gnome-sudoku|gnome-mahjongg|gnome-chess|gnome-robots|gnome-tetravex|gnome-nibbles|gnome-klotski|gnome-taquin|gnome-games|gnome-2048|four-in-a-row|five-or-more|hitori|iagno|lightsoff|quadrapassel|swell-foop|tali|sgt-puzzles|minetest|minetest-server|luanti|supertux|supertuxkart|0ad|freeciv|freeciv-client-gtk3|freeciv-client-gtk4|wesnoth|wesnoth-core|openttd|frozen-bubble|pingus|neverball|neverputt|extremetuxracer|xonotic|armagetronad|chromium-bsu|freedoom|prboom-plus|openarena|nethack-console|nethack-x11|bsdgames|pacman4console|ninvaders|moon-buggy|steam|steam-installer|steam-launcher|lutris|playonlinux|mahjongg|kpat|ksudoku|kmines|kmahjongg|knights|pychess|gnuchess|xboard|tuxpaint|warzone2100|alien-arena|assaultcube|teeworlds|hedgewars|scummvm|dosbox|mame|retroarch|snes9x-gtk|fceux|mupen64plus-ui-console|dolphin-emu|pcsx2|openra|redeclipse|sauerbraten|tuxmath|gbrainy|kobodeluxe|xmoto|mines|solitaire)$'
-RE_P2P='^(transmission|transmission-gtk|transmission-qt|transmission-cli|transmission-common|transmission-daemon|deluge|deluged|deluge-gtk|deluge-web|qbittorrent|qbittorrent-nox|ktorrent|vuze|frostwire|rtorrent|amule|amule-daemon|nicotine|gtk-gnutella|bittornado|tixati|fragments|biglybt)$'
-RE_REMOTE='^(teamviewer|anydesk|rustdesk|x11vnc|tightvncserver|tigervnc-standalone-server|tigervnc-scraping-server|vino|xrdp|realvnc-vnc-server|nomachine)$'
+RE_HACKING='^(john|john-data|hydra|hydra-gtk|aircrack-ng|ophcrack|ophcrack-cli|hashcat|nikto|sqlmap|wireshark|wireshark-qt|wireshark-gtk|wireshark-common|tshark|ettercap-common|ettercap-graphical|ettercap-text-only|kismet|dsniff|metasploit-framework|armitage|nmap|zenmap|ncat|medusa|ncrack|crunch|fcrackzip|pdfcrack|rarcrack|reaver|bully|wifite|bettercap|responder|yersinia|netsniff-ng|masscan|zmap|hping3|crackmapexec|enum4linux|smbmap|nbtscan|gobuster|dirb|dirbuster|wfuzz|ffuf|beef-xss|set|maltego|recon-ng|theharvester|weevely|chntpw|samdump2|bloodhound|python3-impacket|impacket-scripts|netcat-traditional|netcat|cryptcat|cewl|macchanger|proxychains|proxychains4|mitmproxy|sslstrip|driftnet|thc-ipv6|thc-hydra|burpsuite|zaproxy|nuclei|rustscan|feroxbuster|whatweb|amass|subfinder|dnschef|ike-scan|sipvicious|smtp-user-enum|pyrit|unicornscan|cisco-torch|airgeddon|kismet-plugins|pixiewps|mdk3|mdk4|cowpatty|asleap|fern-wifi-cracker|sipcrack|patator|brutespray|dnsenum|dnsrecon|fierce|wpscan|joomscan|commix|routersploit|exploitdb|social-engineer-toolkit|veil|shellter|backdoor-factory|nishang|powersploit|mimikatz|lazagne|freeciv-server)$'
+RE_GAMES='^(aisleriot|gnome-mines|gnome-sudoku|gnome-mahjongg|gnome-chess|gnome-robots|gnome-tetravex|gnome-nibbles|gnome-klotski|gnome-taquin|gnome-games|gnome-2048|four-in-a-row|five-or-more|hitori|iagno|lightsoff|quadrapassel|swell-foop|tali|sgt-puzzles|minetest|minetest-server|luanti|supertux|supertuxkart|0ad|freeciv|freeciv-client-gtk3|freeciv-client-gtk4|wesnoth|wesnoth-core|openttd|frozen-bubble|pingus|neverball|neverputt|extremetuxracer|xonotic|armagetronad|chromium-bsu|freedoom|prboom-plus|openarena|nethack-console|nethack-x11|bsdgames|pacman4console|ninvaders|moon-buggy|steam|steam-installer|steam-launcher|lutris|playonlinux|mahjongg|kpat|ksudoku|kmines|kmahjongg|knights|pychess|gnuchess|xboard|tuxpaint|warzone2100|alien-arena|assaultcube|teeworlds|hedgewars|scummvm|dosbox|mame|retroarch|snes9x-gtk|fceux|mupen64plus-ui-console|dolphin-emu|pcsx2|openra|redeclipse|sauerbraten|tuxmath|gbrainy|wesnoth-[0-9.]+|0ad-data|teeworlds-server|xonotic-server|openarena-server|cataclysm-dda|nethack|dcskobodeluxe|xmoto|mines|solitaire)$'
+RE_P2P='^(transmission|transmission-gtk|transmission-qt|transmission-cli|transmission-common|transmission-daemon|deluge|deluged|deluge-gtk|deluge-web|qbittorrent|qbittorrent-nox|ktorrent|vuze|frostwire|rtorrent|amule|amule-daemon|mldonkey-server|nicotine|gtk-gnutella|bittornado|tixati|fragments|biglybt)$'
+RE_REMOTE='^(teamviewer|anydesk|rustdesk|x11vnc|tightvncserver|tigervnc-standalone-server|tigervnc-scraping-server|vino|xrdp|realvnc-vnc-server|nomachine|dwagent|meshagent|splashtop-streamer)$'
 RE_REVIEW='^(netcat-openbsd|tcpdump|socat|telnet|ftp|tnftp|tor|torbrowser-launcher|aria2|hexchat|irssi|weechat|pidgin|remmina|nfs-common|smbclient|rdesktop|freerdp2-x11|ophcrack-data)$'
 
 # remove_packages "category" pkg...  - simulate first; never remove core desktop/system packages
@@ -1192,6 +1320,9 @@ remove_packages() {
     result REVIEW "Not removing '$p' automatically: it would also remove core system packages. Remove it by hand if needed."
   done
   [[ ${#safe[@]} -eq 0 ]] && return 0
+  local sp kind=removed
+  [[ $MODE == audit ]] && kind=would-remove
+  for sp in "${safe[@]}"; do record 04-apps-removed "$kind" "apt|$sp|$category"; done
   fix "Removed $category: ${safe[*]}" apt-get "${APT_OPTS[@]}" purge "${safe[@]}"
 }
 
@@ -1224,7 +1355,10 @@ sec_software() {
     done
     for s in "${bad_snaps[@]}"; do
       result REVIEW "Prohibited snap package: $s"
-      if ask "Remove snap '$s'?" y; then fix "Removed snap $s" snap remove --purge "$s"; fi
+      if ask "Remove snap '$s'?" y; then
+        record 04-apps-removed "$([[ $MODE == audit ]] && echo would-remove || echo removed)" "snap|$s|prohibited snap"
+        fix "Removed snap $s" snap remove --purge "$s"
+      fi
     done
   fi
   if have flatpak; then
@@ -1233,9 +1367,160 @@ sec_software() {
       [[ -z $f ]] && continue
       if grep -Eiq 'transmission|qbittorrent|deluge|nicotine|steam|minetest|supertux|wireshark|teamviewer|anydesk|rustdesk|lutris' <<<"$f"; then
         result REVIEW "Prohibited flatpak app: $f"
-        if ask "Remove flatpak '$f'?" y; then fix "Removed flatpak $f" flatpak uninstall -y --noninteractive "$f"; fi
+        if ask "Remove flatpak '$f'?" y; then
+          record 04-apps-removed "$([[ $MODE == audit ]] && echo would-remove || echo removed)" "flatpak|$f|prohibited flatpak"
+          fix "Removed flatpak $f" flatpak uninstall -y --noninteractive "$f"
+        fi
       fi
     done < <(flatpak list --app --columns=application 2>/dev/null)
+  fi
+
+  # --------------------------------------------------------------------------
+  # Where every installed program came from (the "was this app allowed?" file)
+  # --------------------------------------------------------------------------
+  info "Writing the software inventory to $LOG_DIR/03-apps-installed.txt"
+  local p
+  for p in "${installed[@]}"; do record 03-apps-installed installed "apt|$p"; done
+  for p in "${hack[@]}";  do record 03-apps-installed flagged "apt|$p|hacking tool"; done
+  for p in "${games[@]}"; do record 03-apps-installed flagged "apt|$p|game"; done
+  for p in "${p2p[@]}";   do record 03-apps-installed flagged "apt|$p|file sharing"; done
+  for p in "${remote[@]}"; do record 03-apps-installed flagged "apt|$p|remote access"; done
+  for p in "${review[@]}"; do record 03-apps-installed flagged "apt|$p|check the README"; done
+  if have apt-mark; then
+    while read -r p; do
+      [[ -n $p ]] && record 03-apps-installed manual "apt|$p|installed by a person, not pulled in as a dependency"
+    done < <(apt-mark showmanual 2>/dev/null)
+  fi
+  if have snap; then
+    while IFS= read -r p; do [[ -n $p ]] && record 03-apps-installed snap "snap|$p"; done < <(snap list 2>/dev/null | awk 'NR>1{print $1" "$2}')
+  fi
+
+  info "Package-manager history: what was installed or removed on this image"
+  local cmdline hline hfile home
+  while IFS= read -r cmdline; do
+    [[ -n $cmdline ]] || continue
+    record 03-apps-installed command "apt|$cmdline"
+  done < <({ for hfile in /var/log/apt/history.log /var/log/apt/history.log.*.gz; do
+               [[ -f $hfile ]] || continue
+               if [[ $hfile == *.gz ]]; then have zcat && zcat "$hfile" 2>/dev/null; else cat "$hfile" 2>/dev/null; fi
+             done; } | grep -E '^Commandline:' | tail -n 60 | sed 's/^Commandline:[[:space:]]*//')
+
+  local -a dpkgaudit
+  mapfile -t dpkgaudit < <(dpkg --audit 2>/dev/null | grep -Ev '^[[:space:]]*$')
+  if [[ ${#dpkgaudit[@]} -gt 0 ]]; then
+    result REVIEW "dpkg reports package(s) in a broken state (half installed or half removed) - run: sudo dpkg --configure -a"
+    show_list 5 "${dpkgaudit[@]}"
+  fi
+
+  info "Download commands in shell history (how software got onto this image)"
+  local -a histfiles=(/root/.bash_history) risky_hist=()
+  for home in $(human_homes); do histfiles+=("$home/.bash_history"); done
+  for hfile in "${histfiles[@]}"; do
+    [[ -r $hfile ]] || continue
+    while IFS= read -r hline; do
+      record 03-apps-installed download-command "$(basename "$(dirname "$hfile")")|$hline"
+      if grep -Eq 'https?://[0-9]{1,3}(\.[0-9]{1,3}){3}|\|[[:space:]]*(sudo[[:space:]]+)?(ba)?sh' <<<"$hline"; then
+        risky_hist+=("$hfile: $hline")
+      fi
+    done < <(grep -E '(wget|curl|git clone|pip[3]?[[:space:]]+install|npm[[:space:]]+install|snap[[:space:]]+install|flatpak[[:space:]]+install|apt(-get)?[[:space:]]+install|dpkg[[:space:]]+-i|chmod[[:space:]]+\+x)' "$hfile" 2>/dev/null | tail -n 40)
+  done
+  if [[ ${#risky_hist[@]} -gt 0 ]]; then
+    result REVIEW "Shell history shows software downloaded from an IP address or piped straight into a shell - check each one"
+    show_list 8 "${risky_hist[@]}"
+  fi
+
+  info "APT repositories and signing keys (a planted repository can install anything)"
+  local -a thirdparty=() unowned_keys=()
+  local src
+  for src in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+    [[ -f $src ]] || continue
+    while IFS= read -r hline; do
+      [[ $hline =~ ^[[:space:]]*(#|$) ]] && continue
+      [[ $hline =~ ^(deb|URIs:) ]] || continue
+      record 03-apps-installed repo "apt-source|$src|$hline"
+      if ! grep -Eqi 'ubuntu\.com|debian\.org|linuxmint\.com|packages\.mozilla\.org|archive\.canonical\.com' <<<"$hline"; then
+        thirdparty+=("$src: $hline")
+      fi
+    done <"$src"
+  done
+  if [[ -d /etc/apt/trusted.gpg.d ]]; then
+    mapfile -t unowned_keys < <(find /etc/apt/trusted.gpg.d -maxdepth 1 -type f 2>/dev/null | not_owned)
+  fi
+  if [[ ${#thirdparty[@]} -gt 0 ]]; then
+    result REVIEW "${#thirdparty[@]} APT source(s) are not a normal Mint/Ubuntu/Debian mirror - check them"
+    show_list 10 "${thirdparty[@]}"
+  else
+    result OK "APT uses only the normal distribution mirrors"
+  fi
+  if [[ ${#unowned_keys[@]} -gt 0 ]]; then
+    result REVIEW "${#unowned_keys[@]} APT signing key file(s) no package installed (someone added a repository by hand)"
+    show_list 5 "${unowned_keys[@]}"
+  fi
+
+  info "Installation files that were downloaded onto this computer"
+  local -a installers=() archives=() downloaded=()
+  mapfile -t downloaded < <(find /var/cache/apt/archives -maxdepth 1 -type f -name '*.deb' 2>/dev/null)
+  for p in "${downloaded[@]}"; do record 03-apps-installed downloaded-package "apt|$p"; done
+  mapfile -t installers < <(find /home /root /opt /srv /tmp /var/tmp /usr/local -xdev -maxdepth 6 -type f \
+      \( -iname '*.deb' -o -iname '*.rpm' -o -iname '*.appimage' -o -iname '*.run' -o -iname '*.msi' -o -iname '*.msix' \
+         -o -iname '*.exe' -o -iname '*.snap' -o -iname '*.flatpakref' -o -iname '*.dmg' -o -iname '*.apk' \) 2>/dev/null \
+      | grep -Ev "$CP_PROTECT_RE|/\.cache/|/snap/|/usr/lib/|/usr/share/" | sort -u)
+  mapfile -t archives < <(find /home /root /opt /srv /tmp /var/tmp -xdev -maxdepth 6 -type f \
+      \( -iname '*.tar.gz' -o -iname '*.tgz' -o -iname '*.tar.xz' -o -iname '*.tar.bz2' -o -iname '*.zip' \
+         -o -iname '*.7z' -o -iname '*.rar' -o -iname '*.iso' -o -iname '*.img' \) 2>/dev/null \
+      | grep -Ev "$CP_PROTECT_RE" | sort -u)
+  for p in "${installers[@]}"; do record 03-apps-installed installer "file|$p|$(stat -c '%s bytes %U' "$p" 2>/dev/null)"; done
+  for p in "${archives[@]}"; do record 03-apps-installed archive "file|$p|$(stat -c '%s bytes %U' "$p" 2>/dev/null)"; done
+  if [[ ${#installers[@]} -gt 0 ]]; then
+    result REVIEW "${#installers[@]} installer file(s) were downloaded instead of installed from a repository - check every one"
+    show_list 15 "${installers[@]}"
+    if ask "Delete these ${#installers[@]} installer file(s)? (keep them if the README needs them)" n strict; then
+      remove_files "downloaded installers" "${installers[@]}"
+    fi
+  else
+    result OK "No installer files left in home, /opt, /tmp or /usr/local"
+  fi
+  if [[ ${#archives[@]} -gt 0 ]]; then
+    result REVIEW "${#archives[@]} archive(s) found - a downloaded program or stolen data is often still inside; open and check each"
+    show_list 10 "${archives[@]}"
+  fi
+
+  info "Other package managers (flatpak, pip, npm, gem, docker)"
+  local pkg out
+  local -a containers=()
+  if have flatpak; then
+    while IFS= read -r pkg; do [[ -n $pkg ]] && record 03-apps-installed flatpak "flatpak|$pkg"; done < <(flatpak list --app --columns=application,version 2>/dev/null)
+  fi
+  if have pip3 || have pip; then
+    pkg=pip3; have "$pkg" || pkg=pip
+    while IFS= read -r out; do [[ -n $out ]] && record 03-apps-installed pip "pip|$out"; done < <("$pkg" list --format=freeze 2>/dev/null | head -200)
+  fi
+  if have npm; then
+    while IFS= read -r out; do [[ -n $out ]] && record 03-apps-installed npm "npm|$(basename "$out")"; done < <(npm ls -g --depth=0 --parseable 2>/dev/null | tail -n +2)
+  fi
+  if have gem; then
+    while IFS= read -r out; do [[ -n $out ]] && record 03-apps-installed gem "gem|$out"; done < <(gem list --local 2>/dev/null | sed -n 's/^\([A-Za-z0-9_.-]*\) (.*/\1/p')
+  fi
+  if have docker && docker info >/dev/null 2>&1; then
+    mapfile -t containers < <(docker ps -a --format '{{.Names}} ({{.Image}}) {{.Status}}' 2>/dev/null)
+    for out in "${containers[@]}"; do record 03-apps-installed container "docker|$out"; done
+    if [[ ${#containers[@]} -gt 0 ]]; then
+      result REVIEW "${#containers[@]} Docker container(s) exist: container images are software too - someone may have pulled them"
+      show_list 8 "${containers[@]}"
+    fi
+  fi
+
+  info "Application-menu shortcuts that no package installed"
+  local -a launchers=()
+  mapfile -t launchers < <(find /usr/share/applications /usr/local/share/applications /etc/xdg/autostart \
+      /root/.local/share/applications /root/.config/autostart -maxdepth 3 -name '*.desktop' -type f 2>/dev/null | not_owned)
+  for home in $(human_homes); do
+    mapfile -t -O "${#launchers[@]}" launchers < <(find "$home/.local/share/applications" "$home/.config/autostart" -maxdepth 2 -name '*.desktop' -type f 2>/dev/null)
+  done
+  for p in "${launchers[@]}"; do record 03-apps-installed launcher "desktop|$p|$(grep -m1 '^Exec=' "$p" 2>/dev/null)"; done
+  if [[ ${#launchers[@]} -gt 0 ]]; then
+    result REVIEW "${#launchers[@]} menu/autostart shortcut(s) - they can launch a downloaded app; check each"
+    show_list 10 "${launchers[@]}"
   fi
 
   info "Looking for hacking tools that were copied in by hand (not installed with apt)"
@@ -1251,7 +1536,7 @@ sec_software() {
     result REVIEW "${#loose[@]} suspicious program file(s) found outside the package system"
     show_list 15 "${loose[@]}"
     if ask "Delete these ${#loose[@]} file(s)?" n strict; then
-      fix "Deleted ${#loose[@]} suspicious program files" rm -f -- "${loose[@]}"
+      remove_files "suspicious program files" "${loose[@]}"
     fi
   fi
 }
@@ -1306,41 +1591,92 @@ scan_roots() {
 # SECTION: Prohibited files
 # ============================================================================
 sec_files() {
-  local -a media other
-  info "Looking for media files (music, videos) and other files that break policy"
-  why "Company policy on CyberPatriot images usually bans personal media and hacking data. Each one removed is often worth points."
+  local -a media data hidden media_by_type
+  info "Looking for media files (music, videos), downloaded files and other files that break policy"
+  why "Company policy on CyberPatriot images usually bans personal media and hacking data, and a downloaded program can be left anywhere. Each one found and removed is often worth points."
   warn "Answer the FORENSICS QUESTIONS first - they sometimes ask about these files!"
   local prune=( -path /proc -o -path /sys -o -path /dev -o -path /run -o -path /snap -o -path /usr/share -o -path /usr/lib \
                 -o -path /usr/lib32 -o -path /usr/lib64 -o -path /usr/libx32 -o -path /lib -o -path /lib32 -o -path /lib64 \
                 -o -path /var/lib -o -path /boot -o -path /var/cache -o -path /usr/src -o -path /usr/include -o -path /var/log \
-                -o -path /etc -o -path "$WORK_DIR" -o -path /usr/bin -o -path /usr/sbin -o -path /bin -o -path /sbin -o -ipath '*cyberpatriot*' )
+                -o -path /etc -o -path "$WORK_DIR" -o -path /usr/bin -o -ipath '*node_modules*' -o -ipath '*site-packages*' -o -ipath '*dist-packages*' -o -path /usr/sbin -o -path /bin -o -path /sbin -o -ipath '*cyberpatriot*' )
   local -a roots; mapfile -t roots < <(scan_roots)
+
+  # Every common audio and video container, plus torrent and playlist files.
   mapfile -t media < <(find "${roots[@]}" -xdev \( "${prune[@]}" \) -prune -o -type f \( \
-      -iname '*.mp3' -o -iname '*.mp4' -o -iname '*.m4a' -o -iname '*.m4v' -o -iname '*.wav' -o -iname '*.wma' -o -iname '*.wmv' \
-      -o -iname '*.flac' -o -iname '*.aac' -o -iname '*.ogg' -o -iname '*.oga' -o -iname '*.ogv' -o -iname '*.opus' -o -iname '*.avi' \
-      -o -iname '*.mkv' -o -iname '*.mov' -o -iname '*.flv' -o -iname '*.mpg' -o -iname '*.mpeg' -o -iname '*.webm' -o -iname '*.3gp' \
-      -o -iname '*.aiff' -o -iname '*.mid' -o -iname '*.midi' -o -iname '*.torrent' \) -print 2>/dev/null | sort -u)
-  mapfile -t other < <(find /home /root /srv /opt /tmp /var/tmp /var/www -xdev -type f \( \
-      -iname '*.pcap' -o -iname '*.pcapng' -o -iname '*.cap' -o -iname '*password*' -o -iname '*passwd*' -o -iname '*creditcard*' \
-      -o -iname '*credit_card*' -o -iname '*ssn*' -o -iname '*.kdbx' -o -iname 'rockyou*' -o -iname '*wordlist*' -o -iname '*hashes*' \) \
-      -not -path '*/.mozilla/*' -not -path '*/.cache/*' -not -path '*/.config/*' -not -path "$WORK_DIR/*" -print 2>/dev/null | sort)
+      -iname '*.mp3' -o -iname '*.mp4' -o -iname '*.m4a' -o -iname '*.m4b' -o -iname '*.m4v' -o -iname '*.m4p' \
+      -o -iname '*.wav' -o -iname '*.wma' -o -iname '*.wmv' -o -iname '*.flac' -o -iname '*.aac' -o -iname '*.ogg' \
+      -o -iname '*.oga' -o -iname '*.ogv' -o -iname '*.ogm' -o -iname '*.ogx' -o -iname '*.opus' -o -iname '*.avi' \
+      -o -iname '*.mkv' -o -iname '*.mov' -o -iname '*.flv' -o -iname '*.mpg' -o -iname '*.mpeg' -o -iname '*.m2v' \
+      -o -iname '*.webm' -o -iname '*.3gp' -o -iname '*.3g2' -o -iname '*.aif' -o -iname '*.aiff' -o -iname '*.aifc' \
+      -o -iname '*.au' -o -iname '*.snd' -o -iname '*.ra' -o -iname '*.ram' -o -iname '*.rm' -o -iname '*.rmvb' \
+      -o -iname '*.asf' -o -iname '*.vob' -o -iname '*.m2ts' -o -iname '*.amr' -o -iname '*.mp2' \
+      -o -iname '*.mpa' -o -iname '*.spx' -o -iname '*.ape' -o -iname '*.wv' -o -iname '*.tta' -o -iname '*.dsf' \
+      -o -iname '*.dff' -o -iname '*.divx' -o -iname '*.xvid' -o -iname '*.mka' -o -iname '*.mid' \
+      -o -iname '*.midi' -o -iname '*.torrent' -o -iname '*.m3u' -o -iname '*.m3u8' -o -iname '*.pls' -o -iname '*.cue' \
+      \) -print 2>/dev/null | sort -u)
+
+  # Media with no extension (the file command knows what it is).
+  if have file; then
+    local f mime
+    while IFS= read -r f; do
+      mime=$(file -b --mime-type "$f" 2>/dev/null)
+      case $mime in audio/*|video/*) media_by_type+=("$f ($mime)") ;; esac
+    done < <(find "${roots[@]}" -xdev \( "${prune[@]}" \) -prune -o -type f -size +1M ! -name '*.*' -print 2>/dev/null | head -200)
+  fi
+
+  # Password lists, packet captures, database dumps, VPN profiles and key material.
+  mapfile -t data < <(find /home /root /srv /opt /tmp /var/tmp /var/www -xdev -type f \( \
+      -iname '*.pcap' -o -iname '*.pcapng' -o -iname '*.cap' -o -iname '*password*' -o -iname '*passwd*' -o -iname '*shadow*' \
+      -o -iname '*creditcard*' -o -iname '*credit_card*' -o -iname '*ssn*' -o -iname '*.kdbx' -o -iname '*.kdb' \
+      -o -iname 'rockyou*' -o -iname '*wordlist*' -o -iname '*hashes*' -o -iname '*hashlist*' -o -iname '*.pot' \
+      -o -iname '*.sql' -o -iname '*.dump' -o -iname '*.ovpn' -o -iname '*.rdp' -o -iname 'id_rsa' -o -iname 'id_dsa' \
+      -o -iname 'id_ecdsa' -o -iname '*.pem' -o -iname '*.pfx' -o -iname '*.p12' \) \
+      -not -path '*/.mozilla/*' -not -path '*/.cache/*' -not -path '*/.config/*' -not -path '*/.local/*' \
+      -not -path '/usr/share/*' -not -path "$WORK_DIR/*" -print 2>/dev/null | sort -u)
+
+  # Hidden files and executable files in the folders anyone can write to.
+  mapfile -t hidden < <(find /tmp /var/tmp /dev/shm /run/shm -xdev -maxdepth 2 \( -name '.*' -o -type f -perm -u+x \) -print 2>/dev/null \
+      | grep -Ev "$CP_PROTECT_RE|harden|/\.X11-unix|/\.ICE-unix|/\.font-unix|/\.Test-unix|/\.XIM-unix|/\.Xauthority" | sort -u)
 
   if [[ ${#media[@]} -eq 0 ]]; then
     result OK "No media files found"
   else
     result REVIEW "Found ${#media[@]} media/torrent file(s)"
     show_list 20 "${media[@]}"
+    local m
+    for m in "${media[@]}"; do record 05-files-found media "audio/video|$m|$(stat -c '%s bytes %U' "$m" 2>/dev/null)"; done
     if ask "Delete ALL ${#media[@]} media/torrent files listed above?" y; then
-      fix "Deleted ${#media[@]} media/torrent files" rm -f -- "${media[@]}"
+      remove_files "media and torrent files" "${media[@]}"
     fi
   fi
-  if [[ ${#other[@]} -eq 0 ]]; then
-    result OK "No password lists, packet captures or similar files found"
+  if [[ ${#media_by_type[@]} -gt 0 ]]; then
+    result REVIEW "Found ${#media_by_type[@]} media file(s) with no extension (detected by their contents)"
+    show_list 10 "${media_by_type[@]}"
+    if ask "Delete these ${#media_by_type[@]} media files?" y; then
+      local mt; for mt in "${media_by_type[@]}"; do record 05-files-found media-no-extension "${mt% (*}"; done
+      remove_files "extensionless media files" "${media_by_type[@]% (*}"
+    fi
+  fi
+  if [[ ${#data[@]} -eq 0 ]]; then
+    result OK "No password lists, packet captures, database dumps or private keys found"
   else
-    result REVIEW "Found ${#other[@]} file(s) that may hold stolen data or passwords - open and check each one"
-    show_list 20 "${other[@]}"
-    if ask "Delete these ${#other[@]} files? (only if you've checked them)" n strict; then
-      fix "Deleted ${#other[@]} suspicious data files" rm -f -- "${other[@]}"
+    result REVIEW "Found ${#data[@]} file(s) that may hold stolen data, passwords or keys - open and check each one"
+    show_list 20 "${data[@]}"
+    local d
+    for d in "${data[@]}"; do record 05-files-found data "sensitive-looking|$d|$(stat -c '%s bytes %U' "$d" 2>/dev/null)"; done
+    if ask "Delete these ${#data[@]} files? (only after you've checked them)" n strict; then
+      remove_files "sensitive-looking data files" "${data[@]}"
+    fi
+  fi
+  if [[ ${#hidden[@]} -eq 0 ]]; then
+    result OK "Nothing hidden or executable in /tmp, /var/tmp or /dev/shm"
+  else
+    result REVIEW "${#hidden[@]} hidden or executable file(s) in a folder anyone can write to - a common place to drop malware"
+    show_list 15 "${hidden[@]}"
+    local h
+    for h in "${hidden[@]}"; do record 05-files-found hidden "temp-folder|$h|$(stat -c '%s bytes %U:%G %a' "$h" 2>/dev/null)"; done
+    if ask "Delete these ${#hidden[@]} files? (check /tmp/.X11-unix style sockets by hand)" n strict; then
+      remove_files "hidden or executable files in temporary folders" "${hidden[@]}"
     fi
   fi
 }
@@ -1663,6 +1999,7 @@ sec_sudoers() {
     local rules=()
     mapfile -t rules < <(grep -Ev '^[[:space:]]*(#|$)' "$STAGE_TMP" | grep -E '^[[:space:]]*[%A-Za-z0-9_.,-]+[[:space:]]+[^=]*=')
     for line in "${rules[@]}"; do
+      record 02-users sudo "$f|$line"
       u=$(awk '{print $1}' <<<"$line")
       case $u in
         root|%sudo|%admin|%wheel|Defaults*|User_Alias|Runas_Alias|Host_Alias|Cmnd_Alias|@include*|\#include*) continue ;;
@@ -1708,6 +2045,195 @@ not_owned() {
 
 human_homes() { awk -F: '$3>=1000 && $3<60000 {print $6}' /etc/passwd; }
 
+# ----------------------------------------------------------------------------
+# Open ports and processes - the inventory that goes into separate log files
+# (07-open-ports.txt, 08-processes.txt, 11-connections.txt). Every line is
+# recorded, and only the genuinely suspicious ones also become REVIEW items.
+# ----------------------------------------------------------------------------
+RE_RISKY_PROC='(^|/)(nc|ncat|netcat|nc\.openbsd|nc\.traditional|socat|telnet|bash|sh|dash|zsh|ksh|python[0-9.]*|perl|ruby|php[0-9.]*|node|nodejs|lua|busybox|xmrig|minerd|cpuminer|kdevtmpfsi|kinsing|tnnls|kthreaddi|pnscan|masscan|zgrab|sliver|mercury|beacon|cobaltstrike|teamserver|meterpreter|chisel|ngrok|frpc|frps|ligolo|gost|pwncat|revshell|backdoor|rootkit|keylog|pspy|linpeas)$'
+RE_BACKDOOR_PORTS='^(4444|4445|1337|31337|6666|6667|6697|9001|4443|12345|5555|7777|8888|9999)$'
+# Names that are only ever a tool or a miner - not a shell someone is legitimately using.
+RE_BADPROC='(^|/)(xmrig|minerd|cpuminer|cryptonight|kdevtmpfsi|kinsing|tnnls|kthreaddi|pnscan|masscan|zgrab|sliver|mercury|beacon|cobaltstrike|teamserver|meterpreter|chisel|ngrok|frpc|frps|ligolo|gost|pwncat|revshell|backdoor|rootkit|keylog|pspy|linpeas|tcpdump)$'
+
+is_private_addr() {
+  local ip=${1%%[%]*}
+  case $ip in
+    127.*|10.*|192.168.*|169.254.*|0.0.0.0|::1|::|'*'|'') return 0 ;;
+  esac
+  [[ $ip == fe80* || $ip == fc* || $ip == fd* ]] && return 0
+  [[ $ip =~ ^172\.(1[6-9]|2[0-9]|3[01])\. ]] && return 0
+  return 1
+}
+
+# catalog_keyword_for_port 22/tcp -> "ssh" (first keyword of the catalog entry)
+catalog_keyword_for_port() {
+  local entry kw pk un po kind p
+  for entry in "${SERVICE_CATALOG[@]}"; do
+    IFS='|' read -r kw pk un po kind <<<"$entry"
+    for p in $po; do
+      [[ $p == "$1" || ${p%/*} == "$1" ]] && { printf '%s' "${kw%% *}"; return 0; }
+    done
+  done
+  return 1
+}
+
+inventory_network() {
+  local line proto addr peer proc port pid pname user exe svc
+  local -a listeners estab exposed risky
+  if ! have ss; then
+    warn "The 'ss' command is missing (install iproute2): ports and connections cannot be listed"
+    return
+  fi
+  local crit_ports
+  crit_ports=" $(critical_ports) "
+
+  info "Listening ports, with the program that owns each one (log: 07-open-ports.txt)"
+  why "Every open port is a door. A port opened by a program no package installed is how a backdoor stays reachable."
+  mapfile -t listeners < <(ss -H -tulpn 2>/dev/null | awk '{p=""; for(i=7;i<=NF;i++) p=p (i>7?" ":"") $i; print $1"|"$5"|"$6"|"$p}')
+  for line in "${listeners[@]}"; do
+    IFS='|' read -r proto addr peer proc <<<"$line"
+    port=${addr##*:}
+    pid=$(grep -oE 'pid=[0-9]+' <<<"$proc" | head -1 | cut -d= -f2)
+    pname=$(grep -oE 'users:\(\("[^"]+' <<<"$proc" | head -1 | sed 's/.*("//')
+    user=$(ps -o user= -p "${pid:-0}" 2>/dev/null | tr -d ' ')
+    exe=$(readlink "/proc/${pid:-0}/exe" 2>/dev/null)
+    svc=$(catalog_keyword_for_port "$port")
+    record 07-open-ports listen "$proto|$port|$addr|${pname:-?}|${pid:-?}|${user:-?}|${exe:-?}|${svc:-unknown}"
+    [[ $addr == 127.* || $addr == \[::1\]* || $addr == ::1:* ]] && continue
+    if grep -Eq "$RE_RISKY_PROC" <<<"$pname"; then
+      risky+=("$proto $addr -> $pname (PID ${pid:-?}, ${exe:-no file})")
+      result REVIEW "POSSIBLE BACKDOOR: '$pname' (PID ${pid:-?}, ${exe:-no program file}) is listening on $addr"
+      if [[ -n $pid ]] && ask "Kill process $pid now? (then find what starts it: cron, a service, rc.local)" y; then
+        fix "Killed process $pid ($pname)" kill -9 "$pid"
+      fi
+      continue
+    fi
+    # A listener whose program file no installed package provides was put here by hand.
+    if [[ -n $exe && $exe != *' (deleted)' && -x $exe ]] && [[ -n $(printf '%s\n' "$exe" | not_owned) ]]; then
+      result REVIEW "Port $port is held by '$pname' (PID ${pid:-?}) from $exe, which no package installed"
+      record 07-open-ports unowned "port $port|$pname|$exe"
+    fi
+    if [[ -n $svc ]] && is_critical "$svc"; then continue; fi
+    [[ $crit_ports == *" $port/tcp "* || $crit_ports == *" $port/udp "* || $crit_ports == *" $port "* ]] && continue
+    exposed+=("$proto $addr -> $pname (port $port, PID ${pid:-?})")
+  done
+  if [[ ${#listeners[@]} -eq 0 ]]; then
+    result OK "Nothing is listening on the network"
+  else
+    result REVIEW "${#listeners[@]} listening socket(s) - the full list with the owning program is in $LOG_DIR/07-open-ports.txt"
+  fi
+  if [[ ${#exposed[@]} -gt 0 ]]; then
+    result REVIEW "${#exposed[@]} port(s) listening for other computers are not for a service the README lists - close them if nothing needs them"
+    show_list 10 "${exposed[@]}"
+    say "${C_DIM}          Close one with: sudo ufw deny <port>   or stop its service${C_RST}"
+  fi
+  if [[ ${#risky[@]} -gt 0 ]]; then
+    record 07-open-ports suspect "${risky[*]}"
+  fi
+
+  info "Established network connections (who this computer is talking to)"
+  why "A reverse shell is an OUTGOING connection to the attacker, so it never shows up as a listening port."
+  mapfile -t estab < <(ss -H -tunp state established 2>/dev/null | awk '{p=""; for(i=6;i<=NF;i++) p=p (i>6?" ":"") $i; print $1"|"$4"|"$5"|"$p}')
+  local rip rport rproc rpid rname rexe
+  local -a odd
+  for line in "${estab[@]}"; do
+    IFS='|' read -r proto addr peer rproc <<<"$line"
+    rip=${peer%:*}; rip=${rip%]}; rip=${rip#[}
+    rport=${peer##*:}
+    rpid=$(grep -oE 'pid=[0-9]+' <<<"$rproc" | head -1 | cut -d= -f2)
+    rname=$(grep -oE 'users:\(\("[^"]+' <<<"$rproc" | head -1 | sed 's/.*("//')
+    rexe=$(readlink "/proc/${rpid:-0}/exe" 2>/dev/null)
+    record 11-connections established "$proto|$addr|$peer|${rname:-?}|${rpid:-?}|${rexe:-?}"
+    if is_private_addr "$rip"; then continue; fi
+    if grep -Eq "$RE_BACKDOOR_PORTS" <<<"$rport"; then
+      odd+=("$peer <- $rname (PID ${rpid:-?}, ${rexe:-?}) - a port backdoors usually use")
+    elif grep -Eq "$RE_RISKY_PROC" <<<"$rname" && [[ $rexe == /tmp/* || $rexe == /var/tmp/* || $rexe == /dev/shm/* || $rexe == *' (deleted)' || -z $rexe ]]; then
+      odd+=("$peer <- $rname (PID ${rpid:-?}, ${rexe:-?}) - a shell or script talking out to the internet")
+    fi
+  done
+  if [[ ${#estab[@]} -eq 0 ]]; then
+    result OK "No established connections"
+  elif [[ ${#odd[@]} -gt 0 ]]; then
+    result REVIEW "${#odd[@]} outgoing connection(s) look like a reverse shell - check them"
+    show_list 10 "${odd[@]}"
+    for line in "${odd[@]}"; do record 11-connections suspect "$line"; done
+  else
+    result REVIEW "${#estab[@]} established connection(s) - the list is in $LOG_DIR/11-connections.txt"
+  fi
+}
+
+inventory_processes() {
+  local line pid ppid user args exe name
+  local -a procs flagged
+  local -A user_count=()
+  procs=()
+  mapfile -t procs < <(ps -eo pid=,ppid=,user=,args= 2>/dev/null)
+  info "Running processes (full list in $LOG_DIR/08-processes.txt)"
+  why "Malware usually runs from a writable folder (home, /tmp, /dev/shm), after its file was deleted, or as a user the README never mentioned."
+  for line in "${procs[@]}"; do
+    read -r pid ppid user args <<<"$line"
+    exe=$(readlink "/proc/$pid/exe" 2>/dev/null)
+    name=${args%% *}
+    record 08-processes process "$pid|$ppid|$user|${exe:-?}|$args"
+    # Kernel threads look like [kworker/0:1]; a process we may not inspect is not suspicious either.
+    if [[ $args == \[* ]] || ! ls -l "/proc/$pid/exe" >/dev/null 2>&1; then continue; fi
+    user_count[$user]=$(( ${user_count[$user]:-0} + 1 ))
+
+    if [[ $exe == /tmp/* || $exe == /var/tmp/* || $exe == /dev/shm/* || $exe == /run/shm/* || $exe == /dev/shm* ]]; then
+      flagged+=("PID $pid ($user) runs $exe: $args")
+    elif [[ $exe == *' (deleted)' ]]; then
+      flagged+=("PID $pid ($user) runs a program whose file was deleted: $exe: $args")
+    elif [[ -z $exe && -n $args ]]; then
+      if ls -l "/proc/$pid/exe" 2>&1 | grep -qi 'permission denied'; then continue; fi
+      flagged+=("PID $pid ($user) has no program file on disk (memory-only): $args")
+    elif grep -Eq "$RE_BADPROC" <<<"$name"; then
+      flagged+=("PID $pid ($user) is a tool that should not run on its own: $args")
+    fi
+  done
+
+  if [[ ${#flagged[@]} -gt 0 ]]; then
+    result REVIEW "${#flagged[@]} process(es) look wrong: unusual folder, deleted program file, or a bare shell"
+    show_list 15 "${flagged[@]}"
+    for line in "${flagged[@]}"; do
+      record 08-processes suspect "$line"
+    done
+    local kpid
+    for line in "${flagged[@]}"; do
+      kpid=$(awk '{print $2}' <<<"$line")
+      [[ $kpid =~ ^[0-9]+$ ]] || continue
+      if ask "Kill process $kpid? (then find what starts it)" y; then fix "Killed process $kpid" kill -9 "$kpid"; fi
+    done
+  else
+    result OK "Every process runs from a normal program file"
+  fi
+
+  # The full list is in 08-processes.txt; the screen only needs the busiest.
+  if have ps; then
+    ps -eo pcpu=,pid=,user=,args= --sort=-pcpu 2>/dev/null | head -8 | while IFS= read -r line; do
+      record 08-processes cpu "$line"
+    done
+  fi
+
+  local u
+  if [[ $README_USERS_GIVEN -eq 1 ]]; then
+    for u in "${!user_count[@]}"; do
+      [[ $u == root || $u == '?' ]] && continue
+      if ! in_list "$u" $AUTHORIZED_ADMINS $AUTHORIZED_USERS && [[ $u != "${SUDO_USER:-}" ]] && id -u "$u" >/dev/null 2>&1; then
+        local uid umin umax
+        uid=$(id -u "$u" 2>/dev/null)
+        umin=$(awk '/^UID_MIN/{print $2}' /etc/login.defs 2>/dev/null); umin=${umin:-1000}
+        umax=$(awk '/^UID_MAX/{print $2}' /etc/login.defs 2>/dev/null); umax=${umax:-60000}
+        # System accounts (root's own, nobody, daemons) are not "unauthorized people".
+        if [[ $uid =~ ^[0-9]+$ ]] && (( uid >= umin && uid <= umax )); then
+          result REVIEW "${user_count[$u]} process(es) run as '$u', who is not in the README"
+          record 08-processes unauthorized-user "$u|${user_count[$u]} process(es)"
+          report_detail "$(ps -u "$u" -o pid=,args= 2>/dev/null | head -10)"
+        fi
+      fi
+    done
+  fi
+}
+
 sec_backdoors() {
   local f line u home all_auth n
   all_auth=$(normalize_list "$AUTHORIZED_ADMINS $AUTHORIZED_USERS")
@@ -1718,6 +2244,7 @@ sec_backdoors() {
     result REVIEW "/etc/ld.so.preload is in use: $(tr '\n' ' ' </etc/ld.so.preload)"
     if ask "Disable /etc/ld.so.preload (rename it)?" y; then
       backup /etc/ld.so.preload
+      record 10-persistence ld.so.preload "renamed /etc/ld.so.preload (forces a library into every program)"
       fix "Disabled /etc/ld.so.preload" mv /etc/ld.so.preload /etc/ld.so.preload.disabled-by-harden
     fi
   else
@@ -1751,11 +2278,12 @@ sec_backdoors() {
   for f in /var/spool/cron/crontabs/*; do
     [[ -f $f ]] || continue
     u=$(basename "$f")
+    record 10-persistence crontab "user=$u|file=$f"
     mapfile -t crons < <(grep -Ev '^[[:space:]]*(#|$)' "$f")
     if ! id "$u" >/dev/null 2>&1 || { [[ $README_USERS_GIVEN -eq 1 && $u != root ]] && ! in_list "$u" $all_auth; }; then
       result REVIEW "Crontab for unauthorized or deleted user '$u'"
       show_list 5 "${crons[@]}"
-      if ask "Delete $u's crontab?" y; then fix "Deleted crontab of $u" rm -f "$f"; fi
+      if ask "Delete $u's crontab?" y; then remove_files "crontab of unauthorized or deleted user $u" "$f"; fi
       continue
     fi
     [[ ${#crons[@]} -eq 0 ]] && continue
@@ -1778,11 +2306,12 @@ sec_backdoors() {
   local -a syscron
   mapfile -t syscron < <(find /etc/cron.d /etc/cron.hourly /etc/cron.daily /etc/cron.weekly /etc/cron.monthly -maxdepth 1 -type f ! -name '.placeholder' 2>/dev/null | not_owned)
   for f in "${syscron[@]}"; do
+    record 10-persistence cron-file "system|$f|not from a package"
     result REVIEW "System cron file not installed by any package: $f"
     mapfile -t crons < <(grep -Ev '^[[:space:]]*(#|$)' "$f" | head -5)
     show_list 5 "${crons[@]}"
     if grep -Eq "$SUSPICIOUS_RE" "$f" && ask "It looks malicious. Delete $f?" y; then
-      backup "$f"; fix "Deleted $f" rm -f "$f"
+      backup "$f"; remove_files "malicious system cron file" "$f"
     fi
   done
   mapfile -t crons < <(grep -Ev '^[[:space:]]*(#|$)' /etc/crontab 2>/dev/null | grep -E "$SUSPICIOUS_RE")
@@ -1805,6 +2334,7 @@ sec_backdoors() {
   for f in "${units[@]}"; do
     name=$(basename "$f")
     exec=$(grep -E '^[[:space:]]*Exec(Start|StartPre|StartPost)=' "$f" | head -2 | tr '\n' ' ')
+    record 10-persistence systemd-unit "file=$f|$exec"
     if grep -Eq "$SUSPICIOUS_RE" <<<"$exec"; then
       result REVIEW "SUSPICIOUS service $name: $exec"
       if [[ $HAS_SYSTEMD -eq 1 ]] && ask "Stop and disable $name?" y; then fix "Stopped and disabled $name" systemctl disable --now "$name"; fi
@@ -1889,7 +2419,7 @@ sec_backdoors() {
     result REVIEW "${#trust[@]} password-less trust file(s) found"
     show_list 10 "${trust[@]}"
     if ask "Delete these files? (they are backed up first)" y strict; then
-      backup "${trust[@]}"; fix "Deleted ${#trust[@]} trust file(s)" rm -f -- "${trust[@]}"
+      backup "${trust[@]}"; remove_files "password-less trust files (.rhosts, .netrc, hosts.equiv)" "${trust[@]}"
     fi
   fi
 
@@ -1903,42 +2433,28 @@ sec_backdoors() {
       n=$(grep -cEv '^[[:space:]]*(#|$)' "$f")
       owner=$(stat -c %U "$f")
       result REVIEW "$f has $n key(s): $(awk '!/^[[:space:]]*(#|$)/{print $NF}' "$f" | tr '\n' ' ')"
+      record 10-persistence authorized-keys "$f|$n key(s)|owner=$(stat -c %U "$f" 2>/dev/null)"
       local def=n
       [[ $home == /root ]] && def=y
       if ask "Remove $f (no more key logins as $owner)?" "$def" strict; then
-        backup "$f"; fix "Removed $f" rm -f "$f"
+        backup "$f"; remove_files "SSH authorized_keys (password-less key login)" "$f"
       fi
     done
   done
   [[ $found_keys -eq 0 ]] && result OK "No authorized_keys files"
 
-  info "Programs listening for network connections"
-  why "A backdoor is often just netcat or a script waiting for the attacker to connect."
-  if have ss; then
-    local -a listeners
-    mapfile -t listeners < <(ss -tulpnH 2>/dev/null)
-    local proc pid addr exe
-    for line in "${listeners[@]}"; do
-      proc=$(grep -oE 'users:\(\("[^"]+"' <<<"$line" | head -1 | cut -d'"' -f2)
-      pid=$(grep -oE 'pid=[0-9]+' <<<"$line" | head -1 | cut -d= -f2)
-      addr=$(awk '{print $1" "$5}' <<<"$line")
-      if [[ $proc =~ ^(nc|ncat|netcat|nc\.openbsd|nc\.traditional|socat|python[0-9.]*|perl|ruby|php[0-9.]*|bash|sh|dash|zsh|node|lua)$ ]]; then
-        exe=$(readlink "/proc/$pid/exe" 2>/dev/null)
-        result REVIEW "POSSIBLE BACKDOOR: '$proc' (PID $pid, $exe) is listening on $addr"
-        if [[ -n $pid ]] && ask "Kill process $pid now? (also find what starts it - cron, services, rc.local)" y; then
-          fix "Killed process $pid ($proc)" kill -9 "$pid"
-        fi
-      fi
-    done
-    result REVIEW "${#listeners[@]} listening port(s) - compare with the README's critical services (full list in report)"
-    mapfile -t listeners < <(awk '{p=$7; gsub(/users:\(\("/,"",p); gsub(/".*/,"",p); print $1"  "$5"  "p}' <<<"$(printf '%s\n' "${listeners[@]}")")
-    show_list 25 "${listeners[@]}"
-  fi
+  # Ports, connections and processes go to their own log files (07, 08, 11).
+  inventory_network
+  inventory_processes
+
+  # Command lines that only make sense for an attacker (curl ... | bash, /dev/tcp/, base64 -d ...).
   local -a procs
   mapfile -t procs < <(ps -eo pid=,user=,args= 2>/dev/null | grep -E "$SUSPICIOUS_RE" | grep -Ev 'grep|harden\.sh')
   if [[ ${#procs[@]} -gt 0 ]]; then
-    result REVIEW "Suspicious running process(es) (stop with: sudo kill -9 <PID>)"
+    result REVIEW "Suspicious command line(s) in the process list (stop with: sudo kill -9 <PID>)"
     show_list 10 "${procs[@]}"
+    local pline
+    for pline in "${procs[@]}"; do record 08-processes suspect "$pline"; done
   fi
 
   info "Checking /etc/hosts for fake website addresses"
@@ -1991,6 +2507,7 @@ sec_backdoors() {
   done
   if [[ ${#autos[@]} -eq 0 ]]; then result OK "No unusual autostart programs"; fi
   for f in "${autos[@]}"; do
+    record 10-persistence autostart "$f|$(grep -m1 '^Exec=' "$f")"
     result REVIEW "Autostart entry: $f -> $(grep -m1 '^Exec=' "$f")"
   done
 
@@ -2002,7 +2519,7 @@ sec_backdoors() {
       result REVIEW "Possible web shell file(s) in /var/www"
       show_list 10 "${shells[@]}"
       if ask "Delete these files? (check them first if the website is a critical service)" n strict; then
-        fix "Deleted ${#shells[@]} web shell file(s)" rm -f -- "${shells[@]}"
+        remove_files "web shell files in /var/www" "${shells[@]}"
       fi
     fi
   fi
@@ -2813,9 +3330,14 @@ print_summary() {
   fi
   say "  Finished in $((SECONDS - START_SECONDS))s."
   say ""
+  write_findings_json
   say "  Your to-do list (REVIEW items): ${C_BLD}$REPORT_FILE${C_RST}"
   say "  Full log:                       $LOG_FILE"
+  say "  Results as JSON (for tools):    $FINDINGS_JSON"
   [[ -d $BACKUP_DIR ]] && say "  Backups of edited files:        $BACKUP_DIR"
+  say ""
+  say "  ${C_BLD}One log file per kind of finding${C_RST} (open the one you need):"
+  write_log_index | sed 's/^/    /'
   say ""
   say "  NEXT: open the Scoring Report on the desktop, then work through the REVIEW items"
   say "  and the checklist for this OS (docs/checklists/)."
@@ -2944,6 +3466,7 @@ main() {
   # for users (umask 077 makes the dconf database private to root).
   umask 022
   mkdir -p "$WORK_DIR" && chmod 700 "$WORK_DIR"
+  log_init
   : >"$LOG_FILE"
   printf '# Findings report - %s\n# Items marked REVIEW need a human decision. WOULD = audit mode found something to fix.\n' "$(date)" >"$REPORT_FILE"
 

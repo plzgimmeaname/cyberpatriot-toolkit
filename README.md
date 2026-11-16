@@ -39,7 +39,7 @@ Every item says **what** to do, **why** it matters, how to do it by **clicking**
 1. They ask for the README's **authorized admins, users and critical services**, and never remove or disable anything you list.
 2. **Audit mode** reports problems and changes nothing. **Apply mode** fixes them and asks before risky steps.
 3. Every changed file or setting is **backed up** first.
-4. You get a **findings report**: a to-do list of the things a human must decide.
+4. You get a **findings report**: a to-do list of the things a human must decide, plus **one log file per kind of finding** (apps installed, apps removed, files found/deleted, open ports, processes, services, persistence, connections) so you can see exactly what it caught - and what it missed.
 
 ```bash
 # Linux
@@ -61,6 +61,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\windows\Harden.ps1
 - **Field cards:** [one printable page per image](site/src/data/field-cards.ts) with the commands that decide the round — no prose, two columns, works offline.
 - **Points map:** [every scored category mapped to the checklist section that covers it](site/src/pages/points-map.astro), generated from the checklists so it cannot drift.
 - **What the scripts do:** an honest [breakdown of ✅ applied / 🔎 checked / ✋ by hand](site/src/pages/automation.astro), counted from the script tags in every step.
+- **Practice range:** [boot the practice images from this page](site/src/pages/range.astro) through a small local agent (`range/agent.py`, QEMU/Hyper-V): pull your own copy, audit it, and read the per-kind reports in the browser.
 - **Gotchas by image:** [the traps that only exist on one image](site/src/data/gotchas.ts) (Debian has no sudo, Mint has no `auth.log`, pf will lock you out…).
 - **Score-dropped triage:** pick what you touched and see the likely cause, the command that confirms it, and how to put it back.
 - **Round post-mortem:** what you missed, why, and what changes next round, exported as Markdown.
