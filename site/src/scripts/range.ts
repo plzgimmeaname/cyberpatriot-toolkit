@@ -607,6 +607,11 @@ function renderSessions(): void {
       audit.dataset.session = session.id;
       actions.append(audit);
     }
+    const reset = el('button', 'cp-btn cp-btn--sm', 'Reset to original');
+    reset.type = 'button';
+    reset.dataset.action = 'reset-session';
+    reset.dataset.session = session.id;
+    actions.append(reset);
     if (session.state === 'booting' || session.state === 'running') {
       const stop = el('button', 'cp-btn cp-btn--sm', 'Stop VM');
       stop.type = 'button';
@@ -689,6 +694,19 @@ async function bootImage(id: string): Promise<void> {
   try {
     const created = await api<{ id: string }>(`/api/images/${id}/boot`, { method: 'POST', body: '{}' });
     message('Booting the VM. The console appears under Booted VMs when the guest answers.', 'ok');
+    await refreshSessions();
+    await selectSession(created.id);
+  } catch (error) {
+    message(error instanceof Error ? error.message : String(error), 'error');
+  }
+}
+
+async function resetSession(id: string): Promise<void> {
+  if (!window.confirm('Throw away this VM and boot the original image again? Changes made inside it are lost; finished runs and their reports are kept.')) return;
+  try {
+    const created = await api<{ id: string }>(`/api/sessions/${id}/reset`, { method: 'POST', body: '{}' });
+    stopScreen();
+    message('Rebooting from the original image — the overlay with your changes is gone.', 'ok');
     await refreshSessions();
     await selectSession(created.id);
   } catch (error) {
@@ -796,6 +814,7 @@ function wire(): void {
     if (action === 'boot' && button.dataset.image) void bootImage(button.dataset.image);
     if (action === 'console' && button.dataset.session) void selectSession(button.dataset.session);
     if (action === 'stop-session' && button.dataset.session) void stopSession(button.dataset.session);
+    if (action === 'reset-session' && button.dataset.session) void resetSession(button.dataset.session);
     if (action === 'run-session' && button.dataset.session) {
       const session = state.sessions.find((sess) => sess.id === button.dataset.session);
       if (session) void startRun(session.imageId, 'audit', session.id);

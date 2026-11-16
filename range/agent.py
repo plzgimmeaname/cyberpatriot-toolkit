@@ -268,7 +268,7 @@ class Range:
             for session in self.sessions.values():
                 if session["imageId"] == image_id and session["state"] in {"booting", "running"}:
                     return {"id": session["id"], "reused": True}
-            sid = "vm-" + datetime.now().strftime("%H%M%S") + "-" + catalog_mod.clean_id(image_id)
+            sid = "vm-" + datetime.now().strftime("%H%M%S") + "-" + secrets.token_hex(2) + "-" + catalog_mod.clean_id(image_id)
             self.sessions[sid] = {
                 "id": sid,
                 "imageId": image_id,
@@ -358,6 +358,26 @@ class Range:
             session["runtime"] = None
         self._save_sessions()
         return {"ok": True}
+
+    def reset_session(self, sid: str) -> dict:
+        """Power off the VM, delete its overlay and boot the original image again."""
+        with self.lock:
+            session = self.sessions.get(sid)
+        if session is None:
+            raise KeyError(sid)
+        image = self.catalog.get(session["imageId"])
+        if image is None:
+            raise KeyError(session["imageId"])
+        self.stop_session(sid)
+        deadline = time.time() + 15
+        while sid in self.session_cancels and time.time() < deadline:
+            time.sleep(0.1)
+        with self.lock:
+            self.sessions.pop(sid, None)
+        shutil.rmtree(self.data / "sessions" / sid, ignore_errors=True)
+        (self.data / "sessions" / f"{sid}.log").unlink(missing_ok=True)
+        self._save_sessions()
+        return {"reset": True, **self.boot_image(image["id"])}
 
     def public_session(self, sid: str) -> dict:
         session = self.sessions[sid]
@@ -781,6 +801,10 @@ class Handler(BaseHTTPRequestHandler):
             m = re.match(r"^/api/images/([A-Za-z0-9_.-]+)/boot$", path)
             if m:
                 self._send(202, rng.boot_image(m.group(1)))
+                return
+            m = re.match(r"^/api/sessions/([A-Za-z0-9_.-]+)/reset$", path)
+            if m:
+                self._send(202, rng.reset_session(m.group(1)))
                 return
             m = re.match(r"^/api/sessions/([A-Za-z0-9_.-]+)/stop$", path)
             if m:

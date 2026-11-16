@@ -76,8 +76,10 @@ Open the site, go to **Practice range**, paste the URL and token, then:
    SHA-256 → unpack → convert to qcow2).
 2. Fill in the README answers (admins, users, critical services) once.
 3. **Boot** keeps the VM running; the page shows a live QEMU frame and the
-   serial console. **Audit** then runs inside that same VM (`sessionId`), or
-   boots one just for the run. **Apply** changes nothing on the base image but
+   serial console. **Reset to original** powers it off, deletes its overlay and
+   boots the untouched base image again, so a broken practice VM is one click
+   from the starting state. **Audit** then runs inside that same VM
+   (`sessionId`), or boots one just for the run. **Apply** changes nothing on the base image but
    does modify the running VM (second confirmation).
 4. Click a run to see the live log and, afterwards, one table per finding kind:
    `03-apps-installed`, `04-apps-removed`, `05-files-found`,
@@ -195,6 +197,7 @@ GET    /api/sessions
 GET    /api/sessions/{id}
 GET    /api/sessions/{id}/console?offset=0
 GET    /api/sessions/{id}/screen          one PNG frame (QEMU only)
+POST   /api/sessions/{id}/reset        stop, drop the overlay, boot the base image again
 POST   /api/sessions/{id}/stop
 GET    /api/runs
 POST   /api/runs            {"imageId":"cp-mint21","mode":"audit","config":{"admins":"alice","users":"bob","critical":"ssh"}}
@@ -222,7 +225,8 @@ curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8787/api/images | jq 
   (mode 600) and is never sent to the website's server — only to the page in
   your browser.
 * **The base image is never written to.** Every run uses an overlay that is
-  deleted afterwards; a booted VM you keep also runs on an overlay.
+  deleted afterwards; a booted VM you keep also runs on an overlay, and
+  **Reset to original** throws that overlay away and boots the base image again.
 * **Unzip passwords are not stored.** They exist in the agent's memory for the
   duration of the pull and never reach a file or the website.
 * **The browser cannot choose commands.** It picks an image id and audit/apply;
@@ -239,11 +243,12 @@ curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8787/api/images | jq 
 python3 -m unittest discover -s tests/range -v
 ```
 
-Six checks, standard library only: adding an image from a **password-protected
+Seven checks, standard library only: adding an image from a **password-protected
 ZIP** served over HTTP (right password → ready, wrong password → `wrong unzip
 password`, no password → `password protected`), that the password never reaches
-`images.local.json`, and that a QEMU screendump PPM becomes a PNG with the same
-pixels (plus the two error cases). The archive test needs the `zip` command and
+`images.local.json`, that a reset replaces the booted VM and deletes its overlay
+folder, and that a QEMU screendump PPM becomes a PNG with the same pixels (plus
+the two error cases). The archive test needs the `zip` command and
 is skipped without it.
 
 ## Limits (read before trusting it)

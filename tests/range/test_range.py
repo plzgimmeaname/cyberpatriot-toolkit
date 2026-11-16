@@ -119,6 +119,19 @@ class AddImageTest(unittest.TestCase):
         self.assertIn("wrong unzip password", state["detail"])
         self.assertIsNone(self.range.catalog.base_disk(created["id"]))
 
+    def test_reset_reboots_from_the_original_image(self) -> None:
+        created = self._add("Mint 21 reset", "s3cret")
+        self.assertEqual(self._wait(created["id"])["state"], "ready")
+
+        first = self.range.boot_image(created["id"])["id"]
+        second = self.range.reset_session(first)["id"]
+
+        self.assertNotEqual(first, second)
+        sessions = {session["id"] for session in self.range.sessions_public()}
+        self.assertNotIn(first, sessions, "the reset VM is replaced, not kept next to the new one")
+        self.assertIn(second, sessions)
+        self.assertFalse((self.data / "sessions" / first).exists(), "the old overlay folder is deleted")
+
     def test_missing_password_says_so(self) -> None:
         created = self._add("Mint 21 no password", "")
         state = self._wait(created["id"])
