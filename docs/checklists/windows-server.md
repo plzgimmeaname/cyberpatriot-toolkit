@@ -2,19 +2,71 @@
 
 Windows Server 2022 is in **Round 2, the State round and the Semifinals** this season.
 
-Most of the [Windows 10/11 checklist](windows-10-11.md) also applies to servers. This page covers **what's different** and the **server roles** (Active Directory, DNS, IIS, FTP, file shares) that make servers harder.
+This page is complete on its own and covers the same ground as the [Windows 10/11](windows-10-11.md), [Linux Mint](linux-mint.md) and [Debian](debian.md) checklists, plus the **server roles** that make servers harder (Active Directory, DNS, IIS, FTP, DHCP, file shares). Where a step says "same as Windows 10/11", the commands are the same; that checklist just explains them in more detail.
 
-**How to use this page:** work top to bottom. When a step says "same as Windows 10/11", follow that section of the other checklist. The script `scripts/windows/Harden.ps1` detects servers and Domain Controllers automatically.
+**How to use this page:** work top to bottom. On a Domain Controller, users and policy live in Active Directory and Group Policy — the local tools do nothing. The script `scripts/windows/Harden.ps1` detects servers and Domain Controllers automatically.
 
 ---
 
 ## 0. Before you touch anything
 
-- [ ] **Read the README twice.** Servers usually have **critical services** (AD, DNS, IIS, FTP, file shares). Write every one down. See [Reading the README](../start-here/reading-the-readme.md).
-- [ ] **Take a VMware snapshot.**
-- [ ] **Open PowerShell as Administrator.**
-- [ ] **Open the Scoring Report.**
-- [ ] **Answer the forensics questions** ([guide](../guides/forensics-questions.md)).
+### 0.1 Read the README twice
+- [ ] Done
+
+**Script:** ✋ Not done by the script. Do this by hand.
+
+Servers usually have **critical services** (AD, DNS, IIS, FTP, file shares) and forbidden software. Write every one down before you change anything. See [Reading the README](../start-here/reading-the-readme.md).
+
+### 0.2 Take a snapshot
+- [ ] Done
+
+**Script:** ✋ Not done by the script. Do this by hand.
+
+**Clicking:** In VMware: **VM → Snapshot → Take Snapshot…**, name it "start".
+
+> [!TIP]
+> Take another snapshot whenever the score goes up a lot. If a GPO or service change breaks something, **VM → Snapshot → Revert**; the scoring engine keeps the points you already earned.
+
+### 0.3 Open PowerShell as Administrator
+- [ ] Done
+
+**Script:** ✋ Not done by the script. Do this by hand.
+
+**Clicking:** **Start → Windows PowerShell → Run as Administrator** (Server Core: you are already at an admin prompt).
+
+**Typing:**
+```powershell
+whoami /groups | Select-String 'S-1-5-32-544'    # prints the Administrators line = you are elevated
+$PSVersionTable.PSVersion                         # 5.1 on 2016-2022
+```
+
+### 0.4 Open the Scoring Report
+- [ ] Done
+
+**Script:** ✋ Not done by the script. Do this by hand.
+
+Double-click **Scoring Report** on the desktop and keep it open in a browser tab. On Server Core, note the score from the report file instead.
+
+### 0.5 Answer the forensics questions first
+- [ ] Done
+
+**Script:** ✋ Not done by the script. Do this by hand.
+
+**What:** Open each `Forensics Question N.txt` on the desktop, find the answer, type it after `ANSWER:` and save. Do this **before** deleting users, files or services — the evidence is often one of them.
+
+**Typing (the usual tools):**
+```powershell
+Get-ChildItem C:\ -Recurse -Filter '*secret*' -ErrorAction SilentlyContinue     # find a file by name
+Select-String -Path C:\Users\*\* -Pattern 'password' -List -ErrorAction SilentlyContinue
+Get-FileHash C:\path\to\file -Algorithm SHA256
+certutil -decode encoded.txt decoded.bin                                          # decode base64
+Get-WinEvent -FilterHashtable @{LogName='Security'; Id=4624} -MaxEvents 20         # logons
+```
+
+More techniques: [Forensics questions guide](../guides/forensics-questions.md).
+
+> [!WARNING]
+> Answers must be **exact**: spelling, capitals, and full paths when asked. Don't delete the `ANSWER:` line.
 
 ---
 
@@ -150,6 +202,28 @@ Set-ADAccountControl bob -DoesNotRequirePreAuth $false
 ```powershell
 Set-ADAccountPassword -Identity bob -Reset -NewPassword (Read-Host -AsSecureString "New password")
 ```
+
+### 2.6 Standalone / member server: local accounts
+- [ ] Done
+
+**Script:** 🔎 The script does the same checks as Windows 10/11 section 2 on the local accounts; read its REVIEW lines.
+
+**Typing:**
+```powershell
+Get-LocalUser | Format-Table Name, Enabled, PasswordRequired, PasswordLastSet, LastLogon
+Get-LocalGroupMember Administrators | Format-Table Name, ObjectClass, PrincipalSource
+net localgroup Guests                                              # should be empty
+Get-LocalUser | Where-Object { -not $_.PasswordRequired -and $_.Enabled }   # accounts that can log in with no password
+```
+Disable `Guest`, remove people from **Administrators** who are not README admins, and delete accounts the README doesn't list:
+```powershell
+Disable-LocalUser -Name Guest
+Remove-LocalUser -Name mallory
+Add-LocalGroupMember -Group Administrators -Member alice
+```
+
+> [!CAUTION]
+> Keep at least one working administrator (the built-in `Administrator` or yourself) before removing anyone else from **Administrators**, or you cannot undo the change.
 
 ---
 
@@ -529,18 +603,266 @@ This changes only what the server *accepts* (the `Server` keys), not how the ser
 
 ---
 
-## 10. The rest
+## 10. Prohibited software and files
 
-Use the [Windows 10/11 checklist](windows-10-11.md) for:
-- [ ] Prohibited software (section 12)
-- [ ] Prohibited files (section 13)
-- [ ] Backdoors and malware (section 14)
-- [ ] Other settings (section 15)
-- [ ] Browsers (section 16)
+### 10.1 Installed programs that break the rules
+- [ ] Done
+
+**Script:** 🔎 The script compares installed programs with its prohibited list; check anything it says it skipped.
+
+**Typing:**
+```powershell
+$keys = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+Get-ItemProperty $keys | Where-Object DisplayName |
+  Select-Object DisplayName, DisplayVersion, InstallDate | Sort-Object DisplayName
+Get-AppxPackage -AllUsers | Select-Object Name, PackageFullName      # Store-style apps (Server 2019+)
+```
+Uninstall with **Settings → Apps → Installed apps** (Server 2022 with Desktop Experience), **Server Manager → Remove Roles and Features** (roles), or the program's own uninstaller:
+```powershell
+Get-AppxPackage -AllUsers -Name '*Xbox*' | Remove-AppxPackage -AllUsers
+```
+On **Server Core** there is no Store and no games; the list is short and usually empty.
+
+### 10.2 Games and consumer apps
+- [ ] Done
+
+**Script:** 🔎 The script removes the games and consumer apps it recognises; check its REVIEW lines.
+
+**Typing:**
+```powershell
+Get-AppxPackage -AllUsers | Where-Object { $_.Name -match 'Solitaire|Minesweeper|Xbox|ZuneMusic|ZuneVideo|SkypeApp|People' } |
+  Select-Object Name
+Get-AppxPackage -AllUsers | Where-Object { $_.Name -match 'Solitaire|Minesweeper|Xbox' } | Remove-AppxPackage -AllUsers
+Get-WindowsFeature | Where-Object { $_.Installed -and $_.Name -match 'DesktopExperience' }   # the desktop itself is a feature
+```
+Don't remove **Desktop Experience** unless the README says the server is headless: it takes Explorer with it.
+
+### 10.3 Media and other prohibited files
+- [ ] Done
+
+**Script:** 🔎 The script searches the common folders for media, archives and password lists and lists them for you.
+
+**Typing:**
+```powershell
+Get-ChildItem C:\Users, C:\Temp, C:\inetpub -Recurse -ErrorAction SilentlyContinue -Include *.mp3,*.mp4,*.avi,*.mkv,*.wav,*.flac,*.mov |
+  Select-Object FullName, Length
+Get-ChildItem C:\Users, C:\Temp -Recurse -ErrorAction SilentlyContinue -Include *password*,*.pcap,*.kdbx,*creditcard* |
+  Select-Object FullName
+```
+Delete only what the README forbids **after** the forensics questions are answered.
+
+### 10.4 Hacking tools and odd executables in user folders
+- [ ] Done
+
+**Script:** 🔎 The script looks for the common tool names and for executables in the temp folders; open each hit before deleting it.
+
+**Typing:**
+```powershell
+Get-ChildItem C:\ -Recurse -ErrorAction SilentlyContinue -Include nmap.exe,nc.exe,ncat.exe,netcat.exe,hydra.exe,john.exe,hashcat.exe,mimikatz.exe,psexec.exe,procdump.exe |
+  Select-Object FullName, Length
+Get-ChildItem $env:TEMP, C:\Users\Public, C:\Windows\Temp -Recurse -Filter *.exe -ErrorAction SilentlyContinue |
+  Select-Object FullName, Length, LastWriteTime
+```
+The Sysinternals tools (`psexec`, `procdump`) are legitimate on some images; only remove them when the README forbids them.
+
+> [!WARNING]
+> Check the forensics questions first: a planted tool is sometimes the answer to one.
 
 ---
 
-## 11. Final checks
+## 11. Backdoors and persistence
+
+### 11.1 Scheduled tasks
+- [ ] Done
+
+**Script:** 🔎 The script lists tasks that run programs outside `C:\Windows` and offers to disable the obvious ones; read the rest yourself.
+
+**Typing:**
+```powershell
+Get-ScheduledTask | Where-Object State -ne Disabled |
+  Select-Object TaskPath, TaskName, State | Sort-Object TaskPath
+Get-ScheduledTask | ForEach-Object { $a = $_.Actions | Where-Object Execute
+  if ($a -and $a.Execute -notmatch 'C:\\Windows\\') { [pscustomobject]@{ Task="$($_.TaskPath)$($_.TaskName)"; Run=$a.Execute; Args=$a.Arguments } } } |
+  Format-List
+```
+A task whose action is `powershell -enc ...`, `cmd /c` with a base64 blob, or a program in `C:\Users\Public` or `C:\Temp` is a backdoor:
+```powershell
+Disable-ScheduledTask -TaskName 'Updater' -TaskPath '\'
+Unregister-ScheduledTask -TaskName 'Updater' -TaskPath '\' -Confirm:$false
+```
+
+### 11.2 Services that don't come from Windows
+- [ ] Done
+
+**Script:** 🔎 The script lists services whose binary is outside `C:\Windows` and offers to disable the suspicious ones (asking first).
+
+**Typing:**
+```powershell
+Get-CimInstance Win32_Service | Where-Object { $_.PathName -and $_.PathName -notmatch 'C:\\Windows\\' } |
+  Select-Object Name, DisplayName, State, StartMode, PathName | Format-Table -Wrap
+Get-CimInstance Win32_Service | Where-Object { $_.PathName -match 'Temp|Users\\Public|ProgramData' } |
+  Select-Object Name, PathName
+```
+Remove one with `sc.exe delete <name>` (or `Remove-Service` on PowerShell 6+), after stopping it.
+
+### 11.3 Run keys, startup folders and Winlogon
+- [ ] Done
+
+**Script:** 🔎 The script empties the suspicious Run/RunOnce values and repairs `Shell`/`Userinit`; check the backups it made.
+
+**Typing:**
+```powershell
+$run = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run',
+       'HKLM:\Software\Microsoft\Windows\CurrentVersion\RunOnce',
+       'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run',
+       'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run'
+Get-ItemProperty $run -ErrorAction SilentlyContinue | Format-List
+Get-ChildItem "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp", "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\StartUp" -ErrorAction SilentlyContinue
+Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' | Format-List Shell, Userinit, Taskman
+```
+`Shell` must be `explorer.exe` and `Userinit` must be `C:\Windows\system32\userinit.exe,`. Anything else runs at every logon.
+
+### 11.4 WMI event subscriptions
+- [ ] Done
+
+**Script:** 🔎 The script lists WMI event filters and consumers; delete any it flags.
+
+**What:** A WMI subscription can run a command whenever something happens (a logon, a file change) and is invisible in Task Manager.
+
+**Typing:**
+```powershell
+Get-CimInstance -Namespace root\subscription -ClassName __EventFilter | Select-Object Name, Query
+Get-CimInstance -Namespace root\subscription -ClassName CommandLineEventConsumer | Select-Object Name, CommandLineTemplate
+Get-CimInstance -Namespace root\subscription -ClassName __FilterToConsumerBinding
+```
+A normal server has none of these. Remove a planted one:
+```powershell
+Get-CimInstance -Namespace root\subscription -ClassName __EventFilter -Filter "Name='Updater'" | Remove-CimInstance
+```
+
+### 11.5 Hidden and password-less local accounts
+- [ ] Done
+
+**Script:** 🔎 The script lists local accounts that aren't in the README and any autologon setting; it removes them only if you say yes.
+
+**Typing:**
+```powershell
+Get-LocalUser | Select-Object Name, Enabled, PasswordRequired, Description
+Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' | Format-List AutoAdminLogon, DefaultUserName, DefaultPassword
+reg query "HKLM\SAM\SAM\Domains\Account\Users\Names"        # every account name, including ones hidden from the tools
+```
+`AutoAdminLogon = 1` with a stored `DefaultPassword` is a free login for anyone at the console.
+
+### 11.6 The hosts file
+- [ ] Done
+
+**Script:** ✅ Done by the script (`security` section).
+
+**Typing:**
+```powershell
+Get-Content C:\Windows\System32\drivers\etc\hosts
+```
+Only comment lines and `127.0.0.1 localhost` are normal. A line pointing a website or an update server at another address is a redirect attack: delete it.
+
+---
+
+## 12. Logging and auditing
+
+### 12.1 Event log size and retention
+- [ ] Done
+
+**Script:** 🔎 The script sets the Security log size and reports logs that were cleared; it does not change the other logs.
+
+**What:** A cleared or tiny log means no evidence, and a planted script can clear it again. Scoring engines check the log size and that auditing is on.
+
+**Typing:**
+```powershell
+Get-WinEvent -ListLog Security, System, Application, 'Microsoft-Windows-PowerShell/Operational' |
+  Format-Table LogName, MaximumSizeInBytes, RecordCount, IsEnabled
+wevtutil sl Security /ms:1000000000          # ~1 GB for Security
+Get-WinEvent -ListLog * -ErrorAction SilentlyContinue | Where-Object { $_.IsEnabled -and $_.RecordCount -eq 0 } |
+  Select-Object LogName                         # logs that were emptied
+```
+
+### 12.2 Audit policy is really on
+- [ ] Done
+
+**Script:** 🔎 On a DC the script sets the audit subcategories through `auditpol`; on a member server it follows Windows 10/11 4.1.
+
+**Typing:**
+```powershell
+auditpol /get /category:*
+```
+For **Account Logon**, **Account Management**, **Logon/Logoff**, **Policy Change**, **Privilege Use** and **System**, at least **Success and Failure** should be set (not "No Auditing"). A planted GPO can turn them off; check with:
+```powershell
+auditpol /get /category:* | Select-String 'No Auditing'
+```
+
+### 12.3 PowerShell logging
+- [ ] Done
+
+**Script:** ✋ Not done by the script. Do this by hand. It is optional but makes an attack visible.
+
+**Typing:**
+```powershell
+$k = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging'
+New-Item -Path $k -Force | Out-Null
+New-ItemProperty -Path $k -Name EnableScriptBlockLogging -Value 1 -PropertyType DWord -Force
+Get-ItemProperty $k | Format-List EnableScriptBlockLogging
+```
+Every PowerShell block then lands in **Microsoft-Windows-PowerShell/Operational** (event 4104), which is where you look for what a planted task actually ran.
+
+---
+
+## 13. Network and protocol hardening
+
+### 13.1 SMB signing, SMBv1 and NTLM
+- [ ] Done
+
+**Script:** ✅ The script turns SMBv1 off and requires SMB signing (`security` section).
+
+**Typing:**
+```powershell
+Get-SmbServerConfiguration | Format-List EnableSMB1Protocol, RequireSecuritySignature, EnableSecuritySignature, RestrictNamedPipeAccess
+Set-SmbServerConfiguration -EnableSMB1Protocol $false -RequireSecuritySignature $true -EnableSecuritySignature $true -Force
+Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' | Format-List LmCompatibilityLevel, NoLMHash, RestrictAnonymous
+```
+`LmCompatibilityLevel` should be `5` (NTLMv2 only, refuse LM and NTLM). `NoLMHash` should be `1`.
+
+### 13.2 LLMNR, NetBIOS and WPAD
+- [ ] Done
+
+**Script:** ✋ Not done by the script. Do this by hand.
+
+**Why:** LLMNR, NetBIOS name resolution and WPAD let anyone on the network answer "where is that server?" and collect hashes.
+
+**Typing:**
+```powershell
+$dns = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'
+New-Item -Path $dns -Force | Out-Null
+New-ItemProperty -Path $dns -Name EnableMulticast -Value 0 -PropertyType DWord -Force      # LLMNR off
+Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces' |
+  ForEach-Object { Set-ItemProperty $_.PSPath -Name NetbiosOptions -Value 2 }              # NetBIOS over TCP/IP off
+Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinHttp' -ErrorAction SilentlyContinue | Format-List DisableWpad
+```
+Set **DisableWpad = 1** under that key (create it if needed). On a Domain Controller, don't disable DNS client services — only LLMNR/NetBIOS/WPAD resolution.
+
+### 13.3 Remote access left open
+- [ ] Done
+
+**Script:** 🔎 The script turns off Remote Assistance and checks RDP/NLA (section 8); review WinRM listeners yourself.
+
+**Typing:**
+```powershell
+Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' | Format-List fDenyTSConnections
+Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' | Format-List UserAuthentication, SecurityLayer
+winrm enumerate winrm/config/listener                 # listeners that should not exist
+```
+
+---
+
+## 14. Final checks
 
 - [ ] Every critical role still works (e.g. `nslookup corp.local` with your domain name for DNS, open the website for IIS)
 - [ ] On a DC: `dcdiag /q` prints no errors (no output = good)

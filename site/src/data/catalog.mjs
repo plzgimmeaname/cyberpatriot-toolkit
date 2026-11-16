@@ -66,7 +66,7 @@ export const CHECKLISTS = [
     name: 'Ubuntu',
     short: 'Ubuntu',
     family: 'linux',
-    blurb: 'The State round image (and the training rounds). Almost the same as Mint.',
+    blurb: 'The State round image (and the training rounds): GNOME, GDM, snaps and ubuntu.sources.',
     script: 'linux',
   },
 ];

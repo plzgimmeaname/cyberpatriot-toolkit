@@ -779,7 +779,7 @@ If the README doesn't mention SSH or remote logins:
 sudo systemctl disable --now ssh
 sudo apt purge openssh-server
 ```
-On **Mint 22**, SSH can also be started on demand by `ssh.socket`; if you keep the package, turn that off too (see [SSH on Ubuntu 22.10 and newer](ubuntu.md#ssh-on-ubuntu-2210-and-newer)).
+On **Mint 22**, SSH can also be started on demand by `ssh.socket`; if you keep the package, turn that off too: `sudo systemctl disable --now ssh.socket`, then `systemctl is-enabled ssh.socket` should say `disabled` (the [Ubuntu checklist](ubuntu.md#9-ssh-server-only-if-installed) covers this in more detail).
 
 ### 9.2 Needed? Make it safe.
 - [ ] Done
