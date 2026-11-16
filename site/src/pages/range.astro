@@ -6,15 +6,15 @@ import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
 import { REPO_URL } from '../data/catalog.mjs';
 
 const steps = [
-  ['Pull', 'Point the catalog at your own copy of an image. The agent downloads it, checks the SHA-256, unpacks it and keeps the base disk read-only.'],
-  ['Boot', 'QEMU (Linux/macOS) or Hyper-V (Windows) starts a throw-away copy of the image with SSH or WinRM forwarded to this computer only.'],
-  ['Audit, then Apply', 'The agent copies the hardening script in, runs it, and brings back findings plus one log file per kind: apps, files, ports, processes, services, persistence.'],
+  ['Start the agent', 'Double-click the launcher in the range/ folder. It starts a small program on your computer and opens this page already connected.'],
+  ['Add an image', 'Paste the download link, the checksum and the unzip password. The agent downloads it, verifies the checksum, unpacks it and boots a throw-away copy.'],
+  ['Use it', 'The VM\'s screen, keyboard and mouse appear on this page (with full screen). Run the hardening script in Audit, then Apply, and read the reports here.'],
 ];
 
 const setupCommands = [
-  ['1. Prepare the catalog (once)', 'cp range/images.example.json range/images.json\n$EDITOR range/images.json      # your image paths, SSH keys, checksums'],
-  ['2. Start the agent (each time)', 'python3 range/agent.py --catalog range/images.json\n# prints: listening on http://127.0.0.1:8787   token: <paste it below>'],
-  ['3. Keep it private', 'cat ~/.rampart-range/token     # the token again, if you closed the window\n# The agent listens on loopback only; nobody else on the network can reach it.'],
+  ['Double-click launcher (no terminal)', 'macOS    range/Start Range.command\nLinux    range/start-range.sh\nWindows  range/start-range.bat'],
+  ['Or start the agent yourself', 'python3 range/agent.py\n# prints the address and token, and opens this page already connected\n# --no-open  do not open the browser      --site <url>  open a hosted copy of the site'],
+  ['Keep it private', 'cat ~/.rampart-range/token     # the token again, if you need to paste it\n# The agent listens on loopback only; nobody else on the network can reach it.'],
 ];
 ---
 
@@ -28,21 +28,22 @@ const setupCommands = [
 >
   <div class="rg cp-wide not-content">
     <p class="rg__lead">
-      <strong>Paste a download link and the unzip password</strong> and the range downloads the image, unpacks it and boots it
-      on this computer, then runs the hardening script inside it. A small agent (range/agent.py) owns the VMs; this page is the
-      remote control, and the console, findings and every per-kind log appear here.
+      <strong>Paste a download link, its checksum and the unzip password</strong> and the range downloads the image, checks it,
+      unpacks it and boots it on this computer. You then use the VM in this page and run the hardening script inside it. A small
+      agent on your computer owns the VMs; this page is the remote control.
     </p>
 
     <div class="cp-callout cp-callout--warn">
       <p>
-        <strong>The website cannot start a VM by itself.</strong> It is static and has no server, so the range agent
-        (<code>range/agent.py</code>) must be running on the computer that has QEMU or Hyper-V. Everything travels between your
-        browser and <code>127.0.0.1</code>; nothing is uploaded.
+        <strong>The website cannot start a VM by itself.</strong> It is static, so the range agent
+        (<code>range/agent.py</code>) must be running on the computer that has QEMU (Linux/macOS) or Hyper-V (Windows). The
+        <strong>add-image form, the VM list and the live desktop appear here once you are connected</strong>: use the launcher and
+        you are connected automatically. Everything travels between your browser and <code>127.0.0.1</code>; nothing is uploaded.
       </p>
       <p>
-        CyberPatriot practice images are given to coaches through the competition portal, not public links, so the catalog points
-        at <strong>your own copy</strong> of each image. Preparation is one-time: add your SSH key to a Linux template (or enable
-        WinRM on Windows), then every run starts from that clean copy.
+        CyberPatriot practice images come to coaches through the competition portal, so the link is <strong>your own copy</strong>
+        of the image (your file server or the link you were given). An image with no SSH key in it still boots: use
+        <strong>Boot desktop only</strong> and work in it from this page.
       </p>
     </div>
 
@@ -63,8 +64,9 @@ const setupCommands = [
     <details class="rg__setup" id="range-setup">
       <summary>Set up the agent (commands)</summary>
       <p class="cp-hint">
-        From the repository root. Needs Python 3.9+, plus <code>qemu-system-x86</code> + <code>qemu-utils</code> (Linux) or the
-        Hyper-V role (Windows); SSH/scp for Linux guests, WinRM for Windows guests.
+        From the repository root. Needs Python 3.9+ and QEMU (<code>brew install qemu</code> on a Mac,
+        <code>sudo apt install qemu-system-x86 qemu-utils</code> on Debian/Ubuntu) or the Hyper-V role (Windows). Running the
+        hardening script inside a VM also needs SSH (Linux) or WinRM (Windows) in the image; the desktop does not.
       </p>
       {
         setupCommands.map(([label, code]) => (
