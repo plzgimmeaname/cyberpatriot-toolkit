@@ -55,7 +55,7 @@ const WINDOWS_COMMON: CardGroup[] = [
     title: '2 · policy that scores',
     lines: [
       { do: 'Password and lockout policy', cmd: 'net accounts' },
-      { do: 'Set the four numbers', cmd: 'net accounts /minpwlen:12 /maxpwage:60 /lockoutthreshold:5 /lockoutduration:15' },
+      { do: 'Set the four numbers', cmd: 'net accounts /minpwlen:12 /maxpwage:60 /lockoutthreshold:5 /lockoutduration:15', note: 'local accounts only: on a domain controller use the domain policy instead' },
       { do: 'Guest and built-in admin', cmd: 'net user Guest | Select-String "active"' },
       { do: 'Never turn off Defender or the firewall', note: 'both are scored, and off is a penalty' },
       { do: 'Defender state', cmd: 'Get-MpComputerStatus | Select RealTimeProtectionEnabled,AntivirusEnabled' },
@@ -186,7 +186,7 @@ export const FIELD_CARDS: FieldCard[] = [
         title: '5 · Active Directory',
         lines: [
           { do: 'Domain password policy', cmd: 'Get-ADDefaultDomainPasswordPolicy' },
-          { do: 'Fix it', cmd: 'Set-ADDefaultDomainPasswordPolicy -Identity (Get-ADDomain).DistinguishedName -MinPasswordLength 12 -LockoutThreshold 5 -LockoutDuration 00:15:00' },
+          { do: 'Fix it', cmd: 'Set-ADDefaultDomainPasswordPolicy -Identity (Get-ADDomain).DistinguishedName -MinPasswordLength 12 -LockoutThreshold 5 -LockoutDuration 00:15:00 -LockoutObservationWindow 00:15:00', note: 'duration must be >= the observation window, or AD rejects it' },
           { do: 'Domain admins', cmd: 'Get-ADGroupMember "Domain Admins" | Select Name' },
           { do: 'Accounts that never expire their password', cmd: 'Get-ADUser -Filter * -Properties PasswordNeverExpires | ? PasswordNeverExpires | Select Name' },
           { do: 'Disabled accounts that still have a profile', cmd: 'Get-ADUser -Filter { Enabled -eq $false } | Select Name' },
