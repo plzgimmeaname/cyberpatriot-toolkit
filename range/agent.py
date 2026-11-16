@@ -27,6 +27,8 @@ are external programs (see range/README.md).
 from __future__ import annotations
 
 import argparse
+import mimetypes
+import webbrowser
 import hmac
 import json
 import os
@@ -42,7 +44,7 @@ import traceback
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -215,9 +217,12 @@ class Range:
             "guest": guest,
             "notes": "Added from the Practice range page.",
         }
-        checksum = str(body.get("sha256") or "").strip().lower()
-        if checksum:
-            entry["source"]["sha256"] = checksum
+        try:
+            parsed = catalog_mod.parse_checksum(str(body.get("checksum") or body.get("sha256") or ""))
+        except catalog_mod.CatalogError as exc:
+            raise ValueError(str(exc)) from exc
+        if parsed:
+            entry["source"]["checksum"] = f"{parsed[0]}:{parsed[1]}"
         if body.get("diskFile"):
             entry["disk"] = {"file": str(body["diskFile"])}
         self.catalog.add_image(entry)
@@ -687,7 +692,22 @@ class Range:
         return out
 
 
+def site_base_from_config(repo: Path) -> str:
+    """The URL prefix the site is built with (site/site.config.mjs `base`), e.g. /cyberpatriot-toolkit."""
+    env = os.environ.get("SITE_BASE")
+    if env is not None:
+        return env
+    try:
+        text = (repo / "site" / "site.config.mjs").read_text()
+    except OSError:
+        return ""
+    found = re.search(r"base:\s*process\.env\.SITE_BASE\s*\?\?\s*'([^']*)'", text) or re.search(r"\bbase:\s*'([^']*)'", text)
+    return found.group(1) if found else ""
+
+
 class Handler(BaseHTTPRequestHandler):
+    site_dir: Path | None = None
+    site_base: str = ""
     server_version = f"RampartRange/{VERSION}"
     range: Range
     token: str
@@ -739,6 +759,47 @@ class Handler(BaseHTTPRequestHandler):
     def _error(self, code: int, message: str) -> None:
         self._send(code, {"error": message})
 
+    def _serve_site(self, url_path: str) -> bool:
+        """Serve the built website (site/dist) so the whole range runs from one address."""
+        root = self.site_dir
+        if root is None:
+            return False
+        base = self.site_base
+        if base and not (url_path == base or url_path.startswith(base + "/")):
+            if url_path in {"", "/"}:
+                self.send_response(302)
+                self.send_header("Location", f"{base}/")
+                self.end_headers()
+                return True
+            return False
+        relative = url_path[len(base):].lstrip("/")
+        target = (root / relative).resolve()
+        try:
+            target.relative_to(root)
+        except ValueError:
+            return False  # outside the site folder
+        if target.is_dir():
+            target = target / "index.html"
+        if not target.is_file():
+            target = root / "404.html"
+            status = 404
+        else:
+            status = 200
+        if not target.is_file():
+            return False
+        body = target.read_bytes()
+        kind = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+        if kind.startswith("text/") or kind in {"application/javascript", "application/json"}:
+            kind += "; charset=utf-8"
+        self.send_response(status)
+        self.send_header("Content-Type", kind)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(body)
+        return True
+
     def _authorized(self) -> bool:
         header = self.headers.get("Authorization", "")
         if header.startswith("Bearer "):
@@ -775,6 +836,8 @@ class Handler(BaseHTTPRequestHandler):
                 "authRequired": True,
                 "provider": "loopback" if self.server.server_address[0] in {"127.0.0.1", "::1"} else "network",
             })
+            return
+        if not path.startswith("/api/") and self._serve_site(parsed.path):
             return
         if not self._authorized():
             self._error(401, "missing or wrong token: open the Practice range page and paste the token the agent printed")
@@ -927,6 +990,10 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--allow-origin", action="append", default=[], help="extra site origin allowed to call the agent")
     parser.add_argument("--print-token", action="store_true", help="print the token and exit")
     parser.add_argument("--quiet", action="store_true", help="no request log")
+    parser.add_argument("--site-dir", default=None, help="built website to serve (default: site/dist when it exists)")
+    parser.add_argument("--base", default=None, help="URL prefix the site was built with (default: read from site/site.config.mjs)")
+    parser.add_argument("--site", default=None, help="open this website address instead of serving the built site")
+    parser.add_argument("--no-open", action="store_true", help="do not open the browser")
     args = parser.parse_args(argv)
 
     data = Path(os.path.expanduser(args.data)).resolve()
@@ -949,6 +1016,9 @@ def main(argv: list[str]) -> int:
         print(f"catalog error: {exc}", file=sys.stderr)
         return 2
 
+    site_dir = Path(args.site_dir).expanduser().resolve() if args.site_dir else (Path(args.repo).resolve() / "site" / "dist")
+    Handler.site_dir = site_dir if (site_dir / "index.html").is_file() and not args.site else None
+    Handler.site_base = (args.base if args.base is not None else site_base_from_config(Path(args.repo))).rstrip("/")
     Handler.range = rng
     Handler.token = token
     Handler.origins = origins
@@ -970,7 +1040,22 @@ def main(argv: list[str]) -> int:
     print(f"  QEMU: {'yes' if caps['qemu'] else 'no'}   Hyper-V: {'yes' if caps['hyperv'] else 'no'}   ssh: {'yes' if caps['ssh'] else 'no'}")
     if args.host not in {"127.0.0.1", "::1", "localhost"}:
         print("  WARNING: listening beyond loopback. Anyone who can reach this port and knows the token can boot images.", file=sys.stderr)
-    print("  open the site's Practice range page and paste the token. Ctrl+C to stop.")
+    shown_host = "127.0.0.1" if args.host in {"0.0.0.0", "::"} else args.host
+    fragment = f"#agent={quote('http://' + shown_host + ':' + str(args.port), safe='')}&token={token}"
+    if Handler.site_dir is not None:
+        start_url = f"http://{shown_host}:{args.port}{Handler.site_base}/range/{fragment}"
+        print(f"  website: http://{shown_host}:{args.port}{Handler.site_base}/ (served from {site_dir})")
+    elif args.site:
+        start_url = args.site.rstrip("/") + "/range/" + fragment
+    else:
+        start_url = None
+        print("  the built website was not found (site/dist). Build it once: npm --prefix site ci && npm --prefix site run build")
+        print("  or open the site's Practice range page yourself and paste the token.")
+    if start_url and not args.no_open:
+        print("  opening the Practice range page in your browser (already connected). Ctrl+C to stop.")
+        threading.Timer(0.8, lambda: webbrowser.open(start_url)).start()
+    else:
+        print("  open the site's Practice range page and paste the token. Ctrl+C to stop.")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

@@ -12,6 +12,8 @@ interface RangeImage {
   sourceKind: string;
   sourceLabel: string | null;
   checksum: boolean;
+  checksumAlgo?: string;
+  checksumVerified?: string;
   guest: Record<string, unknown>;
   state: string;
   progress: number;
@@ -222,7 +224,7 @@ function renderImages(): void {
     const head = el('div', 'rg-image__head');
     const title = el('div');
     title.append(el('h3', 'rg-image__title', image.name));
-    title.append(el('p', 'rg-image__os', `${image.osName || image.family} · ${image.sourceKind} source${image.checksum ? ' · checksum verified' : ''}`));
+    title.append(el('p', 'rg-image__os', `${image.osName || image.family} · ${image.sourceKind} source${image.checksumVerified ? ` · ${image.checksumVerified} verified` : image.checksum ? ` · ${image.checksumAlgo || 'checksum'} to check` : ' · no checksum'}`));
     head.append(title, statusPill(image.state));
     card.append(head);
 
@@ -840,7 +842,7 @@ async function stopSession(id: string): Promise<void> {
   }
 }
 
-async function watchImage(id: string): Promise<void> {
+async function watchImage(id: string, autoBoot = false): Promise<void> {
   for (let i = 0; i < 150; i++) {
     await new Promise((resolve) => window.setTimeout(resolve, 2000));
     try {
@@ -853,6 +855,15 @@ async function watchImage(id: string): Promise<void> {
     if (image.state === 'ready') {
       message(`${image.name} is ready${image.detail ? ` (${image.detail})` : ''}.`, 'ok');
       await refreshSessions();
+      // "Boot it when the download finishes" was ticked: open the VM's desktop without another click.
+      if (autoBoot) {
+        for (let wait = 0; wait < 10 && !state.sessions.some((sess) => sess.imageId === id); wait++) {
+          await new Promise((resolve) => window.setTimeout(resolve, 1000));
+          await refreshSessions();
+        }
+        const booted = state.sessions.find((sess) => sess.imageId === id && (sess.state === 'running' || sess.state === 'booting'));
+        if (booted) await selectSession(booted.id);
+      }
       return;
     }
     if (image.state === 'error') {
@@ -863,11 +874,34 @@ async function watchImage(id: string): Promise<void> {
   message('The download is still going in the background — watch the image card.', 'info');
 }
 
+const HASH_LENGTHS: Record<number, string> = { 32: 'MD5', 40: 'SHA-1', 64: 'SHA-256', 128: 'SHA-512' };
+
+/** What kind of checksum was pasted? Same rules as the agent (range/catalog.py parse_checksum). */
+function describeChecksum(text: string): { ok: boolean; message: string } {
+  const raw = text.trim();
+  if (!raw) return { ok: true, message: 'The download is checked against it while it downloads, and the image is deleted if it does not match.' };
+  const patterns = [
+    /(?<![0-9A-Za-z])[0-9a-fA-F]{32,128}(?![0-9A-Za-z])/g,
+    /(?<![0-9A-Za-z])(?:[0-9a-fA-F]{2}[: ]){15,63}[0-9a-fA-F]{2}(?![0-9A-Za-z])/g,
+  ];
+  for (const pattern of patterns) {
+    for (const match of raw.matchAll(pattern)) {
+      const length = match[0].replace(/[ :]/g, '').length;
+      if (HASH_LENGTHS[length]) return { ok: true, message: `Looks like ${HASH_LENGTHS[length]}. It will be verified after the download.` };
+    }
+  }
+  return { ok: false, message: 'That does not look like a checksum: expect 32, 40, 64 or 128 hexadecimal characters.' };
+}
+
 async function addImage(): Promise<void> {
   const value = (id: string) => byId<HTMLInputElement>(id)?.value.trim() ?? '';
   const url = value('add-url');
   if (!url) {
     message('Paste the download link first.', 'error');
+    return;
+  }
+  if (!describeChecksum(value('add-sha')).ok) {
+    message(describeChecksum(value('add-sha')).message, 'error');
     return;
   }
   try {
@@ -881,7 +915,7 @@ async function addImage(): Promise<void> {
         family: byId<HTMLSelectElement>('add-family')?.value ?? 'linux',
         keyFile: value('add-key'),
         user: value('add-user'),
-        sha256: value('add-sha'),
+        checksum: value('add-sha'),
         boot: byId<HTMLInputElement>('add-boot')?.checked ?? true,
       }),
     });
@@ -889,7 +923,7 @@ async function addImage(): Promise<void> {
     const password = byId<HTMLInputElement>('add-password');
     if (password) password.value = '';
     await refreshImages();
-    await watchImage(created.id);
+    await watchImage(created.id, byId<HTMLInputElement>('add-boot')?.checked ?? true);
   } catch (error) {
     message(error instanceof Error ? error.message : String(error), 'error');
   }
@@ -900,10 +934,20 @@ function wire(): void {
   const storedToken = stored(TOKEN_KEY, sessionStorage);
   state.url = storedUrl || DEFAULT_URL;
   state.token = storedToken;
+  // The launcher opens this page as /range/#agent=<address>&token=<token>. The fragment never leaves the
+  // browser; it is read once and removed from the address bar.
+  const launched = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+  const launchedToken = launched.get('token');
+  if (launchedToken) {
+    state.url = (launched.get('agent') || state.url).replace(/\/$/, '');
+    state.token = launchedToken;
+    window.history.replaceState(null, '', window.location.pathname + window.location.search);
+  }
   const urlInput = byId<HTMLInputElement>('range-url');
   const tokenInput = byId<HTMLInputElement>('range-token');
   if (urlInput) urlInput.value = state.url;
-  if (tokenInput && storedToken) tokenInput.value = storedToken;
+  if (tokenInput && state.token) tokenInput.value = state.token;
+  if (state.token) window.setTimeout(() => void connect(), 0); // paste nothing: go straight in
 
   byId<HTMLButtonElement>('range-connect-btn')?.addEventListener('click', () => void connect());
   byId<HTMLButtonElement>('add-btn')?.addEventListener('click', () => void addImage());
@@ -911,6 +955,14 @@ function wire(): void {
     void refreshImages();
     void refreshRuns();
     void refreshSessions();
+  });
+  byId<HTMLInputElement>('add-sha')?.addEventListener('input', (event) => {
+    const hint = byId<HTMLElement>('add-sha-hint');
+    const result = describeChecksum((event.target as HTMLInputElement).value);
+    if (hint) {
+      hint.textContent = result.message;
+      hint.style.color = result.ok ? '' : 'var(--cp-danger)';
+    }
   });
   document.addEventListener('fullscreenchange', () => {
     const button = document.querySelector<HTMLButtonElement>('button[data-desktop="fullscreen"]');

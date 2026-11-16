@@ -45,11 +45,72 @@ class CatalogError(RuntimeError):
 
 
 def sha256_file(path: Path, chunk: int = 1 << 20) -> str:
-    h = hashlib.sha256()
+    return hash_file(path, "sha256", chunk)
+
+
+def hash_file(path: Path, algo: str, chunk: int = 1 << 20) -> str:
+    h = hashlib.new(algo)
     with path.open("rb") as fh:
         for block in iter(lambda: fh.read(chunk), b""):
             h.update(block)
     return h.hexdigest()
+
+
+# hex length -> algorithm. A download page may give any of these.
+HASH_BY_LENGTH = {32: "md5", 40: "sha1", 64: "sha256", 128: "sha512"}
+HASH_LABELS = {"md5": "MD5", "sha1": "SHA-1", "sha256": "SHA-256", "sha512": "SHA-512"}
+
+
+def parse_checksum(text: str) -> tuple[str, str] | None:
+    """Understand whatever was pasted from a download page or a tool.
+
+    Accepts a bare hash (any case, with spaces or colons between bytes), `sha256:HASH`,
+    `SHA256 (file) = HASH`, `HASH  *file.zip` (sha256sum / md5sum output) and the
+    PowerShell `Get-FileHash` table. The algorithm comes from the label when there is
+    one, otherwise from the length (32 = MD5, 40 = SHA-1, 64 = SHA-256, 128 = SHA-512).
+    Returns (algorithm, lowercase hex), or None for an empty string. Raises
+    CatalogError when it cannot be a checksum, so a typo is caught before a long download.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    label = None
+    found = re.search(r"\b(md5|sha-?1|sha-?256|sha-?512)\b", raw, re.I)
+    if found:
+        label = found.group(1).lower().replace("-", "")
+    candidate = None
+    patterns = (
+        r"(?<![0-9A-Za-z])[0-9a-fA-F]{32,128}(?![0-9A-Za-z])",          # a bare hash
+        r"(?<![0-9A-Za-z])(?:[0-9a-fA-F]{2}[: ]){15,63}[0-9a-fA-F]{2}(?![0-9A-Za-z])",  # byte pairs, openssl style
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, raw):
+            squeezed = re.sub(r"[ :]", "", match.group(0))
+            if len(squeezed) in HASH_BY_LENGTH:
+                candidate = squeezed.lower()
+                break
+        if candidate:
+            break
+    if candidate is None:
+        raise CatalogError(
+            "that does not look like a checksum: paste the MD5 (32), SHA-1 (40), SHA-256 (64) or SHA-512 (128) "
+            "hexadecimal characters from the download page"
+        )
+    algo = HASH_BY_LENGTH[len(candidate)]
+    if label and label != algo:
+        raise CatalogError(f"the checksum is labelled {HASH_LABELS[label]} but has the length of a {HASH_LABELS[algo]}")
+    return algo, candidate
+
+
+def source_checksum(source: dict) -> tuple[str, str] | None:
+    """The checksum stored for an image: `checksum` ("sha256:HEX") or the older `sha256` field."""
+    value = source.get("checksum") or source.get("sha256")
+    if not value:
+        return None
+    try:
+        return parse_checksum(str(value))
+    except CatalogError:
+        return None
 
 
 def expand(path: str, base: Path | None = None) -> Path:
@@ -95,6 +156,12 @@ def validate_entry(entry: object, index: int = 0) -> dict:
         raise CatalogError(f'image {entry["id"]}: only http:// and https:// links can be pulled')
     if source.get("kind") == "local" and not source.get("path"):
         raise CatalogError(f'image {entry["id"]}: source.path is required for a local source')
+    for field in ("checksum", "sha256"):
+        if source.get(field):
+            try:
+                parse_checksum(str(source[field]))
+            except CatalogError as exc:
+                raise CatalogError(f'image {entry["id"]}: source.{field}: {exc}') from exc
     return entry
 
 
@@ -328,7 +395,9 @@ class Catalog:
             "notes": entry.get("notes", ""),
             "sourceKind": source.get("kind"),
             "sourceLabel": source.get("url") or source.get("path"),
-            "checksum": bool(source.get("sha256")),
+            "checksum": bool(source_checksum(source)),
+            "checksumAlgo": HASH_LABELS[source_checksum(source)[0]] if source_checksum(source) else "",
+            "checksumVerified": st.get("checksumVerified", ""),
             "guest": {k: v for k, v in (entry.get("guest") or {}).items() if k != "password"},
             "state": st.get("state", "missing"),
             "progress": int(st.get("progress", 0)),
@@ -353,7 +422,7 @@ class Catalog:
         source = entry["source"]
         dest = self.image_dir(image_id)
         dest.mkdir(parents=True, exist_ok=True)
-        self.save_state(image_id, state="pulling", progress=0, detail="starting", error="")
+        self.save_state(image_id, state="pulling", progress=0, detail="starting", error="", checksumVerified="")
 
         try:
             archive: Path
@@ -363,11 +432,22 @@ class Catalog:
                     raise CatalogError(f"local source does not exist: {src}")
                 log(f"using local source {src.name}")
                 archive = src
+                wanted = source_checksum(source)
+                if wanted:
+                    self.save_state(image_id, state="pulling", progress=0, detail=f"verifying {HASH_LABELS[wanted[0]]}")
+                    actual = hash_file(src, wanted[0])
+                    if actual != wanted[1]:
+                        raise CatalogError(
+                            f"checksum mismatch ({HASH_LABELS[wanted[0]]}): expected {wanted[1]}, got {actual}. "
+                            "The file is not the one the checksum belongs to - do not boot it."
+                        )
+                    log(f"checksum verified ({HASH_LABELS[wanted[0]]})")
+                    self.save_state(image_id, checksumVerified=HASH_LABELS[wanted[0]])
             else:
                 url = source["url"]
                 name = source.get("fileName") or Path(urllib.parse.urlparse(url).path).name or f"{image_id}.img"
                 archive = dest / Path(name).name
-                self._download(url, archive, image_id, source.get("sha256"), log, cancel)
+                self._download(url, archive, image_id, source_checksum(source), log, cancel)
 
             disk = archive
             if archive.name.lower().endswith(ARCHIVE_SUFFIXES):
@@ -400,13 +480,16 @@ class Catalog:
             self.save_state(image_id, state="error", detail=str(exc), error=str(exc))
             raise
 
-    def _download(self, url: str, target: Path, image_id: str, checksum: str | None, log, cancel) -> None:
-        if target.exists() and checksum and sha256_file(target) == checksum.lower():
-            log(f"already downloaded and checksum matches: {target}")
+    def _download(self, url: str, target: Path, image_id: str, checksum: tuple[str, str] | None, log, cancel) -> None:
+        label = HASH_LABELS[checksum[0]] if checksum else ""
+        if target.exists() and checksum and hash_file(target, checksum[0]) == checksum[1]:
+            log(f"already downloaded and the {label} matches: {target}")
+            self.save_state(image_id, checksumVerified=label)
             return
         part = target.with_suffix(target.suffix + ".part")
         log(f"downloading {urllib.parse.urlparse(url).netloc}{urllib.parse.urlparse(url).path}")
         request = urllib.request.Request(url, headers={"User-Agent": "rampart-range/1.0"})
+        digest = hashlib.new(checksum[0]) if checksum else None  # hashed while it downloads: no second pass over a multi-GB file
         try:
             with urllib.request.urlopen(request, timeout=60) as response, part.open("wb") as out:
                 total = int(response.headers.get("Content-Length") or 0)
@@ -419,6 +502,8 @@ class Catalog:
                     if not block:
                         break
                     out.write(block)
+                    if digest is not None:
+                        digest.update(block)
                     done += len(block)
                     pct = int(done * 100 / total) if total else 0
                     if pct != last:
@@ -428,17 +513,18 @@ class Catalog:
         except (urllib.error.URLError, OSError) as exc:
             part.unlink(missing_ok=True)
             raise CatalogError(f"download failed: {exc}") from exc
-        if checksum:
-            actual = sha256_file(part)
-            if actual != checksum.lower():
+        if checksum and digest is not None:
+            actual = digest.hexdigest()
+            if actual != checksum[1]:
                 part.unlink(missing_ok=True)
                 raise CatalogError(
-                    f"checksum mismatch: expected {checksum.lower()}, got {actual}. "
-                    "The file is damaged or was replaced - do not boot it."
+                    f"checksum mismatch ({label}): expected {checksum[1]}, got {actual}. "
+                    "The file is damaged or was replaced - it was deleted, do not boot it."
                 )
-            log("checksum verified (SHA-256)")
+            log(f"checksum verified ({label})")
+            self.save_state(image_id, checksumVerified=label)
         elif str(target.name).lower().endswith(ARCHIVE_SUFFIXES):
-            log("no sha256 given for this image: the download was NOT checksum-verified")
+            log("no checksum given for this image: the download was NOT verified")
         part.replace(target)
 
     def _convert_to_qcow2(self, disk: Path, dest: Path, log) -> Path:

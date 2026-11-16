@@ -8,7 +8,7 @@ processes — on the **Practice range** page (`/range/`).
 It works like a small, self-hosted VA CyberRange: a local agent owns the VMs and
 the browser is only a remote control. **Paste a download link and, if the archive
 has one, the unzip password** — the agent downloads the image, verifies the
-SHA-256 when you give one, unpacks it, boots a throw-away copy and streams the
+checksum (MD5, SHA-1, SHA-256 or SHA-512) when you give one, unpacks it, boots a throw-away copy and streams the
 screen and console back to the page. Nothing is uploaded anywhere, and the agent
 listens on `127.0.0.1` unless you tell it otherwise.
 
@@ -53,7 +53,25 @@ disk for every run, so the base image must already be able to answer:
 Booting a stock CyberPatriot ZIP that has no key installed is not supported: the
 agent will say so instead of guessing a password.
 
-## Quick start
+## Quick start: no terminal needed
+
+**Double-click a launcher** and everything else happens on the page:
+
+| Computer | Launcher |
+|---|---|
+| macOS | `range/Start Range.command` |
+| Linux | `range/start-range.sh` |
+| Windows | `range/start-range.bat` |
+
+It starts the agent, serves the website from `site/dist` (building it once if Node.js
+is installed), and opens your browser on the **Practice range** page **already
+connected**: the token travels in the URL fragment, which never leaves the browser and
+is removed from the address bar. On the page: paste the **download link**, the
+**checksum** and the **unzip password**, press **Download & boot**, and the VM's desktop
+opens when it is up. Pass `--no-open` to skip the browser, `--site https://...` to open a
+hosted copy of the site instead.
+
+## Quick start (by hand)
 
 ```bash
 cp range/images.example.json range/images.json
@@ -100,10 +118,27 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"url":"https://files.example.org/Mint21_Practice.zip",
        "password":"the-zip-password",
        "family":"linux",
+       "checksum":"sha256:c7b3330dcd88bd33...",
        "keyFile":"~/.ssh/rampart_mint",
        "boot":true}' \
   http://127.0.0.1:8787/api/images/add
 ```
+
+**Checksum:** paste whatever the download page shows, in any of these forms. The type is
+detected from the length (or the label), checked while the file downloads, and a download
+that does not match is deleted, never unpacked or booted:
+
+```
+c7b3330dcd88bd33...                       bare hash, any case
+sha256: c7b3330d...                       with a label
+SHA256 (Mint21.zip) = c7b3330d...         openssl / BSD style
+c7b3330d...  *Mint21.zip                  sha256sum / md5sum output
+c7:b3:33:0d:...                           colon separated
+```
+
+MD5 (32 hex characters), SHA-1 (40), SHA-256 (64) and SHA-512 (128) are supported. The API
+field is `checksum` (the older `sha256` still works). A pasted value that is not a checksum
+is refused immediately, before anything downloads.
 
 Accepted `url` schemes are `https`, `http`, `ftp` and `file`. The name comes from
 the file, or from `name`; `family` picks the script (`linux`, `windows`,
@@ -278,7 +313,7 @@ curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8787/api/images | jq 
 python3 -m unittest discover -s tests/range -v
 ```
 
-Twelve checks, standard library only (the QEMU one is skipped without QEMU): adding an image from a **password-protected
+Eighteen checks, standard library only (the QEMU one is skipped without QEMU): adding an image from a **password-protected
 ZIP** served over HTTP (right password → ready, wrong password → `wrong unzip
 password`, no password → `password protected`), that the password never reaches
 `images.local.json`, that a reset replaces the booted VM and deletes its overlay

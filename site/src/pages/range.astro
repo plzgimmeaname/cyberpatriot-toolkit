@@ -168,8 +168,9 @@ const setupCommands = [
             <input id="add-user" type="text" placeholder="student / Administrator" spellcheck="false" autocomplete="off" />
           </label>
           <label>
-            <span>SHA-256 (optional, recommended)</span>
-            <input id="add-sha" type="text" placeholder="checksum from the download page" spellcheck="false" autocomplete="off" />
+            <span>Checksum (optional, recommended)</span>
+            <input id="add-sha" type="text" placeholder="paste it as it appears: MD5, SHA-1, SHA-256 or SHA-512" spellcheck="false" autocomplete="off" />
+            <small id="add-sha-hint" class="cp-hint" role="status" aria-live="polite">The download is checked against it while it downloads, and the image is deleted if it does not match.</small>
           </label>
           <label class="rg__check">
             <input id="add-boot" type="checkbox" checked />

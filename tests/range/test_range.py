@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import os
 import shutil
 import socket
@@ -29,6 +30,7 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "range"))
 
 import agent  # noqa: E402
+import catalog  # noqa: E402
 import providers  # noqa: E402
 import screen  # noqa: E402
 
@@ -143,12 +145,80 @@ class AddImageTest(unittest.TestCase):
         self.assertTrue(self.range.catalog.get(created["id"])["guest"]["desktopOnly"])
         self._wait(created["id"])
 
+    def _plain_server(self) -> tuple[bytes, str]:
+        payload = b"disk-bytes" * 200_000
+        (self.tmp / "served" / "plain.qcow2").write_bytes(payload)
+        return payload, f"{self.server.url}/plain.qcow2"
+
+    def test_pasted_checksum_is_verified_while_downloading(self) -> None:
+        payload, url = self._plain_server()
+        for algo, text in (
+            ("sha256", hashlib.sha256(payload).hexdigest().upper()),
+            ("sha1", f"sha1: {hashlib.sha1(payload).hexdigest()}"),
+            ("md5", f"{hashlib.md5(payload).hexdigest()}  *plain.qcow2"),
+        ):
+            with self.subTest(algo=algo):
+                created = self.range.add_image(
+                    {"url": url, "name": f"plain-{algo}", "family": "linux", "checksum": text}
+                )
+                state = self._wait(created["id"])
+                self.assertEqual(state["state"], "ready", state)
+                self.assertEqual(state["checksumVerified"], catalog.HASH_LABELS[algo])
+                described = self.range.catalog.describe(self.range.catalog.get(created["id"]))
+                self.assertEqual(described["checksumVerified"], catalog.HASH_LABELS[algo])
+
+    def test_wrong_checksum_deletes_the_download(self) -> None:
+        _, url = self._plain_server()
+        created = self.range.add_image(
+            {"url": url, "name": "plain-bad", "family": "linux", "checksum": "0" * 64}
+        )
+        state = self._wait(created["id"])
+        self.assertEqual(state["state"], "error")
+        self.assertIn("checksum mismatch (SHA-256)", state["error"])
+        folder = self.range.catalog.image_dir(created["id"])
+        self.assertEqual([p.name for p in folder.glob("plain*")], [])
+
+    def test_a_typo_in_the_checksum_is_caught_before_downloading(self) -> None:
+        _, url = self._plain_server()
+        with self.assertRaises(ValueError):
+            self.range.add_image({"url": url, "name": "typo", "family": "linux", "checksum": "not a hash"})
+
     def test_missing_password_says_so(self) -> None:
         created = self._add("Mint 21 no password", "")
         state = self._wait(created["id"])
 
         self.assertEqual(state["state"], "error")
         self.assertIn("password protected", state["detail"])
+
+
+class ChecksumParseTest(unittest.TestCase):
+    H256 = "a" * 64
+
+    def test_formats(self) -> None:
+        cases = {
+            self.H256.upper(): ("sha256", self.H256),
+            f"sha256:{self.H256}": ("sha256", self.H256),
+            f"SHA-256: {self.H256}": ("sha256", self.H256),
+            f"SHA256 (Mint.zip) = {self.H256}": ("sha256", self.H256),
+            f"{self.H256}  *Mint.zip": ("sha256", self.H256),
+            ":".join(["ab"] * 32): ("sha256", "ab" * 32),
+            "d41d8cd98f00b204e9800998ecf8427e": ("md5", "d41d8cd98f00b204e9800998ecf8427e"),
+            "da39a3ee5e6b4b0d3255bfef95601890afd80709": ("sha1", "da39a3ee5e6b4b0d3255bfef95601890afd80709"),
+            f"Algorithm Hash Path\n--------- ---- ----\nSHA256 {self.H256} C:\\x.zip": ("sha256", self.H256),
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text[:30]):
+                self.assertEqual(catalog.parse_checksum(text), expected)
+
+    def test_empty_means_none_and_garbage_is_rejected(self) -> None:
+        self.assertIsNone(catalog.parse_checksum("   "))
+        for bad in ("hello", "abc123", "g" * 64):
+            with self.subTest(bad=bad), self.assertRaises(catalog.CatalogError):
+                catalog.parse_checksum(bad)
+
+    def test_a_label_that_disagrees_with_the_length_is_rejected(self) -> None:
+        with self.assertRaises(catalog.CatalogError):
+            catalog.parse_checksum(f"md5: {self.H256}")
 
 
 class DesktopTest(unittest.TestCase):
