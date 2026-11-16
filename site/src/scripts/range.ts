@@ -679,6 +679,32 @@ function setDesktopStatus(text: string, kind: 'ok' | 'error' | '' = ''): void {
   status.dataset.kind = kind;
 }
 
+type FullscreenCapable = HTMLElement & { webkitRequestFullscreen?: () => void };
+type FullscreenDoc = Document & { webkitFullscreenElement?: Element | null; webkitExitFullscreen?: () => void };
+
+/** Full screen for the VM view; Esc leaves it. The browser keeps Esc, so use the toolbar to send other keys. */
+async function toggleDesktopFullscreen(): Promise<void> {
+  const target = byId<FullscreenCapable>('session-desktop');
+  const doc = document as FullscreenDoc;
+  if (!target) return;
+  try {
+    if (document.fullscreenElement || doc.webkitFullscreenElement) {
+      if (document.exitFullscreen) await document.exitFullscreen();
+      else doc.webkitExitFullscreen?.();
+    } else if (target.requestFullscreen) {
+      await target.requestFullscreen();
+    } else if (target.webkitRequestFullscreen) {
+      target.webkitRequestFullscreen();
+    } else {
+      setDesktopStatus('This browser does not allow full screen for this view.', 'error');
+      return;
+    }
+    target.focus();
+  } catch (error) {
+    setDesktopStatus(error instanceof Error ? error.message : 'Full screen was blocked.', 'error');
+  }
+}
+
 function disconnectDesktop(): void {
   try {
     state.rfb?.disconnect();
@@ -886,6 +912,12 @@ function wire(): void {
     void refreshRuns();
     void refreshSessions();
   });
+  document.addEventListener('fullscreenchange', () => {
+    const button = document.querySelector<HTMLButtonElement>('button[data-desktop="fullscreen"]');
+    const on = Boolean(document.fullscreenElement);
+    if (button) button.textContent = on ? 'Exit full screen' : 'Full screen';
+    window.dispatchEvent(new Event('resize')); // noVNC re-fits the picture to the new size
+  });
   document.querySelector('.rg__desktop-actions')?.addEventListener('click', (event) => {
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button[data-desktop]');
     if (!button || !state.session) return;
@@ -896,7 +928,7 @@ function wire(): void {
       setDesktopStatus('Disconnected.');
     }
     if (act === 'cad') state.rfb?.sendCtrlAltDel();
-    if (act === 'fullscreen') void byId<HTMLElement>('session-desktop')?.requestFullscreen?.();
+    if (act === 'fullscreen') void toggleDesktopFullscreen();
   });
   byId<HTMLButtonElement>('detail-stop')?.addEventListener('click', () => void stopRun());
   byId<HTMLButtonElement>('detail-delete')?.addEventListener('click', () => void deleteRun());

@@ -484,6 +484,22 @@ const setupCommands = [
     overflow: hidden;
     touch-action: none;
   }
+  .rg__desktop:fullscreen {
+    width: 100vw;
+    height: 100vh;
+    max-height: none;
+    aspect-ratio: auto;
+    border: 0;
+    border-radius: 0;
+  }
+  .rg__desktop:-webkit-full-screen {
+    width: 100vw;
+    height: 100vh;
+    max-height: none;
+    aspect-ratio: auto;
+    border: 0;
+    border-radius: 0;
+  }
   #session-desktop-status[data-kind='error'] {
     color: var(--cp-danger);
   }
