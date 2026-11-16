@@ -74,14 +74,17 @@ hosted copy of the site instead.
 ## Quick start (by hand)
 
 ```bash
-cp range/images.example.json range/images.json
-$EDITOR range/images.json                 # paths, keys, checksums
-
-python3 range/agent.py --catalog range/images.json
+python3 range/agent.py
 # Rampart Range agent 1.0.0
 #   listening on http://127.0.0.1:8787
 #   token:  <printed once, then stored in ~/.rampart-range/token>
 ```
+
+That is all: **no `images.json` is needed**, because images are added from the page and
+remembered in `~/.rampart-range/images.local.json`. Only if you want a fixed list of images
+(for a whole team) copy `range/images.example.json` to `range/images.json` and edit it in any
+editor, then start with `python3 range/agent.py --catalog range/images.json`. The example
+entries point at files that do not exist, so do not copy it just to try the range.
 
 Open the site, go to **Practice range**, paste the URL and token, then:
 

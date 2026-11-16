@@ -1,2 +1,4 @@
 __pycache__/
 *.pyc
+# your own range catalog (paths and key locations)
+range/images.json
