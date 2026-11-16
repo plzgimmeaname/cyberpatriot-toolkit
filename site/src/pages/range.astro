@@ -6,7 +6,7 @@ import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
 import { REPO_URL } from '../data/catalog.mjs';
 
 const steps = [
-  ['Start the agent', 'Double-click the launcher in the range/ folder. It starts a small program on your computer and opens this page already connected.'],
+  ['Start the agent', 'Download the agent above and double-click its launcher (or the one in the range/ folder of the repository). It starts a small program on your computer and opens this page already connected.'],
   ['Add an image', 'Paste the download link, the checksum and the unzip password. The agent downloads it, verifies the checksum, unpacks it and boots a throw-away copy.'],
   ['Use it', 'The VM\'s screen, keyboard and mouse appear on this page (with full screen). Run the hardening script in Audit, then Apply, and read the reports here.'],
 ];
@@ -44,6 +44,17 @@ const setupCommands = [
         CyberPatriot practice images come to coaches through the competition portal, so the link is <strong>your own copy</strong>
         of the image (your file server or the link you were given). An image with no SSH key in it still boots: use
         <strong>Boot desktop only</strong> and work in it from this page.
+      </p>
+    </div>
+
+    <div class="cp-callout cp-callout--success rg__get">
+      <p>
+        <strong>Get the agent:</strong>
+        <a href={withBase('/files/rampart-range.zip')} download>rampart-range.zip</a>
+        (macOS, Linux and Windows: unzip, then double-click <code>Start Range</code>) or the single file
+        <a href={withBase('/files/rampart-range.pyz')} download>rampart-range.pyz</a>
+        (<code>python3 rampart-range.pyz</code>). It needs Python 3.9+ and, to boot images, QEMU. Checksums:
+        <a href={withBase('/files/rampart-range.sha256')}>rampart-range.sha256</a>.
       </p>
     </div>
 

@@ -53,6 +53,30 @@ disk for every run, so the base image must already be able to answer:
 Booting a stock CyberPatriot ZIP that has no key installed is not supported: the
 agent will say so instead of guessing a password.
 
+## Download the agent (no repository needed)
+
+The agent is also published as a **single downloadable package**, built from this folder:
+
+| File | What it is |
+|---|---|
+| `rampart-range.zip` | the `.pyz` plus double-click launchers for macOS / Linux / Windows, a README and `SHA256SUMS`: hand this to a teammate |
+| `rampart-range.pyz` | one file with the agent, the hardening scripts and the website; run `python3 rampart-range.pyz` |
+| `rampart-range.sha256` | checksums of both |
+
+Get them from the **Practice range** page ("Get the agent"), or the repository's Releases. It needs only
+Python 3.9+ (and QEMU to boot images). On first start it unpacks its scripts and website into
+`~/.rampart-range/app/<version>/`; a new version unpacks again.
+
+Build it yourself:
+
+```bash
+python3 range/package.py                 # -> range/out/rampart-range.pyz and .zip
+python3 range/package.py --no-site       # without the website (then open a hosted copy with --site <url>)
+```
+
+The site's deploy workflow builds it into `/files/`, and pushing a tag like `range-v1.1.0`
+publishes a GitHub release with the same files (`.github/workflows/release-range.yml`).
+
 ## Quick start: no terminal needed
 
 **Double-click a launcher** and everything else happens on the page:
@@ -316,12 +340,12 @@ curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8787/api/images | jq 
 python3 -m unittest discover -s tests/range -v
 ```
 
-Eighteen checks, standard library only (the QEMU one is skipped without QEMU): adding an image from a **password-protected
+Nineteen checks, standard library only (the QEMU one is skipped without QEMU): adding an image from a **password-protected
 ZIP** served over HTTP (right password → ready, wrong password → `wrong unzip
 password`, no password → `password protected`), that the password never reaches
 `images.local.json`, that a reset replaces the booted VM and deletes its overlay
 folder, and that a QEMU screendump PPM becomes a PNG with the same pixels (plus
-the two error cases), plus the live desktop: the password is never listed, a dead QEMU is not shown as running, and a real throw-away QEMU answers the WebSocket handshake. The archive test needs the `zip` command and
+the two error cases), plus the live desktop: the password is never listed, a dead QEMU is not shown as running, and a real throw-away QEMU answers the WebSocket handshake. A packaging check builds `rampart-range.pyz`, runs it from an empty folder and confirms it unpacks the scripts. The archive test needs the `zip` command and
 is skipped without it.
 
 ## Limits (read before trusting it)

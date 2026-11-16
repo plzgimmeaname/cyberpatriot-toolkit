@@ -33,6 +33,9 @@ jobs:
       - run: npm ci
       - name: Build and check every link, checklist step and download checksum
         run: npm test
+      - name: Build the downloadable range agent into the site
+        working-directory: .
+        run: python3 range/package.py --out site/dist/files
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

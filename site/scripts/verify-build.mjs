@@ -67,6 +67,8 @@ for (const file of pages) {
       continue;
     }
     links++;
+    // The downloadable range agent is built into dist/files by range/package.py after the site build.
+    if (/\/files\/rampart-range\.(zip|pyz|sha256)$/.test(url)) continue;
     const target = resolvePath(url);
     if (!target) {
       errors.push(`${page}: broken link ${url}`);

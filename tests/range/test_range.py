@@ -21,6 +21,7 @@ import tempfile
 import threading
 import time
 import unittest
+import zipfile
 import zlib
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -189,6 +190,46 @@ class AddImageTest(unittest.TestCase):
 
         self.assertEqual(state["state"], "error")
         self.assertIn("password protected", state["detail"])
+
+
+class PackageTest(unittest.TestCase):
+    """The downloadable agent: one .pyz that runs far away from the repository."""
+
+    def test_the_package_runs_on_its_own(self) -> None:
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        built = subprocess.run(
+            [sys.executable, str(REPO / "range" / "package.py"), "--no-site", "--out", str(tmp / "out")],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(built.returncode, 0, built.stderr)
+        pyz = tmp / "out" / "rampart-range.pyz"
+        bundle = tmp / "out" / "rampart-range.zip"
+        self.assertTrue(pyz.is_file() and bundle.is_file())
+        names = zipfile.ZipFile(bundle).namelist()
+        for expected in ("rampart-range/rampart-range.pyz", "rampart-range/Start Range.command", "rampart-range/start-range.bat", "rampart-range/SHA256SUMS", "rampart-range/README.txt"):
+            self.assertIn(expected, names)
+        version = subprocess.run([sys.executable, str(pyz), "--version"], capture_output=True, text=True, cwd=tmp)
+        self.assertIn("Rampart Range agent", version.stdout + version.stderr)
+
+        port = providers.free_port()
+        proc = subprocess.Popen(
+            [sys.executable, str(pyz), "--data", str(tmp / "data"), "--port", str(port), "--no-open", "--token", "t0ken"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=tmp,
+        )
+        self.addCleanup(proc.wait)
+        self.addCleanup(proc.terminate)
+        deadline = time.time() + 15
+        health = ""
+        while time.time() < deadline and not health:
+            try:
+                import urllib.request
+                health = urllib.request.urlopen(f"http://127.0.0.1:{port}/api/health", timeout=2).read().decode()
+            except OSError:
+                time.sleep(0.2)
+        self.assertIn('"ok": true', health)
+        unpacked = list((tmp / "data" / "app").glob("*/scripts/linux/harden.sh"))
+        self.assertEqual(len(unpacked), 1, "the hardening scripts must be unpacked next to the agent")
 
 
 class ChecksumParseTest(unittest.TestCase):

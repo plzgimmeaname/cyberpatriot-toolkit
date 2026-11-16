@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import mimetypes
 import webbrowser
+import zipfile
 import hmac
 import json
 import os
@@ -54,7 +55,7 @@ import screen as screen_mod  # noqa: E402
 import providers  # noqa: E402
 import runner  # noqa: E402
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 MAX_BODY = 1 << 20
 MAX_LOG_BYTES = 2 << 20
 
@@ -692,6 +693,35 @@ class Range:
         return out
 
 
+def is_packaged() -> bool:
+    """True when this code runs from the single-file package (rampart-range.pyz)."""
+    return HERE.is_file() and zipfile.is_zipfile(HERE)
+
+
+def unpack_bundle(data: Path) -> Path:
+    """Unpack the scripts and the built website that travel inside the package, once per version."""
+    with zipfile.ZipFile(HERE) as archive:
+        try:
+            stamp = archive.read("payload/VERSION").decode().strip()
+        except KeyError:
+            stamp = VERSION
+        target = data / "app" / stamp
+        if (target / ".complete").exists():
+            return target
+        shutil.rmtree(target, ignore_errors=True)
+        for member in archive.namelist():
+            if not member.startswith("payload/") or member.endswith("/"):
+                continue
+            relative = member[len("payload/"):]
+            destination = (target / relative).resolve()
+            if target.resolve() not in destination.parents:
+                continue  # never write outside the app folder
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(archive.read(member))
+        (target / ".complete").write_text(stamp)
+    return target
+
+
 def site_base_from_config(repo: Path) -> str:
     """The URL prefix the site is built with (site/site.config.mjs `base`), e.g. /cyberpatriot-toolkit."""
     env = os.environ.get("SITE_BASE")
@@ -981,9 +1011,10 @@ def token_for(data: Path, wanted: str | None) -> str:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Rampart Range agent: run practice images, collect the hardening reports.")
-    parser.add_argument("--catalog", default=str(HERE / "images.json"), help="image catalog (default: range/images.json)")
+    parser.add_argument("--version", action="version", version=f"Rampart Range agent {VERSION}")
+    parser.add_argument("--catalog", default=None, help="image catalog (optional; default: range/images.json when it exists)")
     parser.add_argument("--data", default=os.environ.get("RAMPART_DATA", "~/.rampart-range"), help="where downloads and runs are kept")
-    parser.add_argument("--repo", default=str(HERE.parent), help="repository root (holds scripts/)")
+    parser.add_argument("--repo", default=None, help="folder holding scripts/ (default: the repository, or the unpacked package)")
     parser.add_argument("--host", default="127.0.0.1", help="listen address (default: loopback only)")
     parser.add_argument("--port", type=int, default=8787)
     parser.add_argument("--token", default=None, help="bearer token (default: generate once in the data folder)")
@@ -998,6 +1029,11 @@ def main(argv: list[str]) -> int:
 
     data = Path(os.path.expanduser(args.data)).resolve()
     data.mkdir(parents=True, exist_ok=True)
+    if args.repo is None:
+        # Run from the downloaded package (rampart-range.pyz): unpack its scripts and website once.
+        args.repo = str(unpack_bundle(data) if is_packaged() else HERE.parent)
+    if args.catalog is None:
+        args.catalog = str(data / "images.json" if is_packaged() else HERE / "images.json")
     token = token_for(data, args.token)
     if args.print_token:
         print(token)
