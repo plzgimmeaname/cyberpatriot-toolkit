@@ -75,8 +75,10 @@ Open the site, go to **Practice range**, paste the URL and token, then:
 1. **Pull** a catalog image instead, if you already listed it (download →
    SHA-256 → unpack → convert to qcow2).
 2. Fill in the README answers (admins, users, critical services) once.
-3. **Boot** keeps the VM running; the page shows a live QEMU frame and the
-   serial console. **Reset to original** powers it off, deletes its overlay and
+3. **Boot** keeps the VM running; the page shows the VM's **live desktop** (real
+   screen, keyboard and mouse, see below) and the serial console. **Boot desktop
+   only** skips the wait for SSH/WinRM, so a stock CyberPatriot image with no key
+   in it still boots and you work in it from the browser. **Reset to original** powers it off, deletes its overlay and
    boots the untouched base image again, so a broken practice VM is one click
    from the starting state. **Audit** then runs inside that same VM
    (`sessionId`), or boots one just for the run. **Apply** changes nothing on the base image but
@@ -128,6 +130,38 @@ Archives and formats handled: `.zip`, `.7z`, `.tar`, `.tar.gz`/`.tgz`, `.tar.xz`
   restart needs the password again.
 * A wrong password fails fast with `wrong unzip password`; it is not retried
   against the archive.
+
+## The live desktop in the browser
+
+With the QEMU provider the VM's display is **interactive on the page**, no VNC
+client or extra server needed:
+
+```
+ browser (noVNC)  ──ws://127.0.0.1:<port>──▶  QEMU's built-in VNC WebSocket
+```
+
+* QEMU is started with `-vnc 127.0.0.1:N,websocket=PORT,password=on`, so it
+  listens on loopback only and refuses every connection until the agent has set
+  a random 8-character password through the QEMU monitor.
+* The page fetches `GET /api/sessions/{id}/desktop` (needs the agent token) and
+  gets the port and that password. The password lives in the agent's memory
+  only: it is never written to `sessions.json`, the logs or the session list.
+* noVNC (`@novnc/novnc`, bundled into the page, no CDN) draws it. There are
+  buttons for Connect / Disconnect, Ctrl+Alt+Del and full screen. A USB tablet
+  device is added so the mouse pointer lines up with the guest's.
+* It works while the guest is still booting, so you can watch GRUB, the Windows
+  logo and the login screen, and press keys in firmware menus.
+* **Boot desktop only** (or an image added without an SSH key) does not wait for
+  SSH/WinRM. Audits and runs need SSH/WinRM; the desktop does not.
+* Same limits as the agent: loopback only. If the agent runs on another machine,
+  tunnel both ports (`ssh -L 8787:127.0.0.1:8787 -L <wsport>:127.0.0.1:<wsport>`),
+  or run the page on that machine.
+* A VM that crashes or is killed is listed as stopped within a few seconds.
+
+Why not run the VM inside the browser (v86, CheerpX, WebVM)? Those WebAssembly
+emulators handle small Linux images; a multi-GB Windows 11 or Mint image would
+be unusably slow and would have to be downloaded into the page. Streaming the
+real VM from QEMU is the practical way to get "the VM in the browser".
 
 ## What a run does
 
@@ -192,11 +226,12 @@ GET    /api/capabilities
 GET    /api/images
 POST   /api/images/add      {"url":"https://...","password":"...","family":"linux","keyFile":"~/.ssh/...","boot":true}
 POST   /api/images/{id}/pull
-POST   /api/images/{id}/boot
+POST   /api/images/{id}/boot        {"desktopOnly": true} to skip waiting for SSH/WinRM
 GET    /api/sessions
 GET    /api/sessions/{id}
 GET    /api/sessions/{id}/console?offset=0
 GET    /api/sessions/{id}/screen          one PNG frame (QEMU only)
+GET    /api/sessions/{id}/desktop         {host, port, password} for the noVNC viewer (QEMU only)
 POST   /api/sessions/{id}/reset        stop, drop the overlay, boot the base image again
 POST   /api/sessions/{id}/stop
 GET    /api/runs
@@ -243,12 +278,12 @@ curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8787/api/images | jq 
 python3 -m unittest discover -s tests/range -v
 ```
 
-Seven checks, standard library only: adding an image from a **password-protected
+Twelve checks, standard library only (the QEMU one is skipped without QEMU): adding an image from a **password-protected
 ZIP** served over HTTP (right password → ready, wrong password → `wrong unzip
 password`, no password → `password protected`), that the password never reaches
 `images.local.json`, that a reset replaces the booted VM and deletes its overlay
 folder, and that a QEMU screendump PPM becomes a PNG with the same pixels (plus
-the two error cases). The archive test needs the `zip` command and
+the two error cases), plus the live desktop: the password is never listed, a dead QEMU is not shown as running, and a real throw-away QEMU answers the WebSocket handshake. The archive test needs the `zip` command and
 is skipped without it.
 
 ## Limits (read before trusting it)
@@ -260,15 +295,17 @@ is skipped without it.
 * A guest that needs a login prompt, a "press any key to boot" or a network
   bridge will time out — the run log says so and the console log is kept
   (`runs/<id>/console.log` on QEMU).
-* The live **screen** is a QEMU frame (`screendump`) every couple of seconds and
-  is read-only: it is for watching the boot, not for using the desktop. Linux
+* The older live **frame** (`screendump`, every couple of seconds, read-only) is
+  only shown when the live desktop is not available. Linux
   guests send text output on the serial console only when the kernel is told to
   (`console=ttyS0`), so a stock image often shows a blank console while the
   frame shows GRUB/the login screen. Hyper-V and `attach` have no frame — use
   RDP/SSH or the Hyper-V console there.
-* Hyper-V `screendump` does not exist, and raw remote desktop in the browser
-  (noVNC/websockify) is not bundled on purpose: it would mean shipping a second
-  server and a WebSocket proxy the agent does not have.
+* The interactive desktop is QEMU-only. Hyper-V and `attach` VMs have no frame
+  or desktop on the page (use the Hyper-V console, RDP or SSH); QEMU's own
+  WebSocket VNC means no proxy is needed for QEMU.
+* On an Apple Silicon Mac QEMU emulates x86 (TCG), which is slow: fine for
+  trying the page, painfully slow for Windows. Use an x86 host with KVM/HVF.
 * The agent has no user accounts of its own. Use it on a machine only you use,
   or run it with `--host 127.0.0.1` and reach it through an SSH tunnel.
 * The site itself is static: the range page needs the agent running locally. It

@@ -160,7 +160,7 @@ const setupCommands = [
             </select>
           </label>
           <label>
-            <span>SSH private key (Linux/FreeBSD template)</span>
+            <span>SSH private key (optional: leave empty to use the live desktop only)</span>
             <input id="add-key" type="text" placeholder="~/.ssh/rampart_mint" spellcheck="false" autocomplete="off" />
           </label>
           <label>
@@ -200,6 +200,22 @@ const setupCommands = [
         <div id="session-view" hidden>
           <h3 id="session-title" class="rg__h">Console</h3>
           <p id="session-note" class="cp-hint"></p>
+          <section id="session-desktop-wrap" class="rg__desktop-wrap" hidden aria-label="Live desktop of the booted VM">
+            <div class="rg__desktop-bar">
+              <span id="session-desktop-status" class="rg-muted" role="status" aria-live="polite"></span>
+              <span class="rg__desktop-actions">
+                <button type="button" class="cp-btn cp-btn--sm" data-desktop="connect">Connect</button>
+                <button type="button" class="cp-btn cp-btn--sm" data-desktop="disconnect">Disconnect</button>
+                <button type="button" class="cp-btn cp-btn--sm" data-desktop="cad">Ctrl+Alt+Del</button>
+                <button type="button" class="cp-btn cp-btn--sm" data-desktop="fullscreen">Full screen</button>
+              </span>
+            </div>
+            <div id="session-desktop" class="rg__desktop" tabindex="0"></div>
+            <p class="cp-hint">
+              The VM's real screen, keyboard and mouse, streamed from QEMU straight to this page (WebSocket VNC on 127.0.0.1,
+              protected by a random password the agent hands to this tab). Nothing goes through any server. Hyper-V and attached VMs have no desktop here.
+            </p>
+          </section>
           <figure id="session-screen-wrap" class="rg__screen" hidden>
             <img id="session-screen" alt="Live frame from the booted practice VM" />
             <figcaption class="cp-hint">A frame from the VM's display, refreshed every couple of seconds (QEMU only). Work inside the VM over SSH; this view is read-only.</figcaption>
@@ -441,6 +457,38 @@ const setupCommands = [
   }
   .rg__screen {
     margin: 0.6rem 0 0;
+  }
+  .rg__desktop-wrap {
+    margin: 0.6rem 0 0;
+  }
+  .rg__desktop-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+  }
+  .rg__desktop-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
+  .rg__desktop {
+    aspect-ratio: 4 / 3;
+    width: 100%;
+    max-height: 80vh;
+    background: #000;
+    border: 1px solid var(--cp-border);
+    border-radius: var(--cp-radius-sm);
+    overflow: hidden;
+    touch-action: none;
+  }
+  #session-desktop-status[data-kind='error'] {
+    color: var(--cp-danger);
+  }
+  #session-desktop-status[data-kind='ok'] {
+    color: var(--cp-success);
   }
   .rg__screen img {
     width: 100%;

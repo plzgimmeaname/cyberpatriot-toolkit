@@ -14,10 +14,14 @@ from __future__ import annotations
 
 import json
 import os
+import platform
+import secrets
 import shutil
 import signal
 import socket
 import subprocess
+import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -54,6 +58,38 @@ def qemu_screendump(runtime: dict, log=None) -> Path | None:
             log(f"screen: {exc}")
         return None
     return screen if screen.exists() else None
+
+
+def qemu_monitor(monitor: str, command: str, timeout: float = 5.0) -> str:
+    """Send one command to a QEMU human-monitor socket and return its reply."""
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.settimeout(timeout)
+        sock.connect(monitor)
+        sock.recv(65536)  # banner
+        sock.sendall(command.encode() + b"\n")
+        time.sleep(0.3)
+        try:
+            return sock.recv(65536).decode("utf-8", "replace")
+        except OSError:
+            return ""
+
+
+def free_vnc_display() -> int:
+    """A VNC display number whose TCP port (5900+n) is free on loopback."""
+    for display in range(10, 90):
+        with socket.socket() as probe:
+            try:
+                probe.bind(("127.0.0.1", 5900 + display))
+            except OSError:
+                continue
+            return display
+    raise ProviderError("no free VNC port between 5910 and 5989")
+
+
+def vnc_password() -> str:
+    """VNC passwords are cut to 8 characters by the protocol."""
+    alphabet = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789"
+    return "".join(secrets.choice(alphabet) for _ in range(8))
 
 
 def free_port() -> int:
@@ -130,7 +166,7 @@ class QemuProvider(Provider):
             return False, "install qemu-utils (needed to make the throw-away overlay disk)"
         return True, "ready"
 
-    def start(self, image: dict, base_disk: Path, run_dir: Path, log, cancel=None) -> dict:
+    def start(self, image: dict, base_disk: Path, run_dir: Path, log, cancel=None, early=None) -> dict:
         ok, why = self.available()
         if not ok:
             raise ProviderError(f"QEMU is not usable: {why}")
@@ -151,13 +187,16 @@ class QemuProvider(Provider):
         family = image.get("family")
         ram = int((image.get("guest") or {}).get("ramMb") or 4096)
         cpus = int((image.get("guest") or {}).get("cpus") or 2)
-        accel = (image.get("guest") or {}).get("accel") or "kvm:tcg"
+        accel = (image.get("guest") or {}).get("accel") or ("hvf:tcg" if platform.system() == "Darwin" else "kvm:tcg")
         netdev = f"user,id=net0,hostfwd=tcp:127.0.0.1:{ssh_port}-:22"
         if family == "windows":
             netdev += f",hostfwd=tcp:127.0.0.1:{winrm_port}-:5985"
+        vnc_display = free_vnc_display()
+        vnc_ws = free_port()
         pidfile = run_dir / "qemu.pid"
         console = run_dir / "console.log"
-        monitor = run_dir / "monitor.sock"
+        # Unix sockets have a ~100 byte path limit (macOS 104): keep this one short, outside the run folder.
+        monitor = Path(tempfile.mkdtemp(prefix="rg-", dir="/tmp" if os.name == "posix" else None)) / "m.sock"
         screen = run_dir / "screen.ppm"
         cmd = [
             "qemu-system-x86_64",
@@ -168,16 +207,30 @@ class QemuProvider(Provider):
             "-drive", f"file={overlay},if=virtio,format=qcow2",
             "-netdev", netdev,
             "-device", "virtio-net-pci,netdev=net0",
-            "-display", "none",
+            # An absolute pointer, so the mouse in the browser lines up with the guest's pointer.
+            "-device", "qemu-xhci",
+            "-device", "usb-tablet",
+            # The live desktop: VNC on loopback with a WebSocket the page's noVNC viewer connects to.
+            # password=on: nothing can connect until a random per-session password is set below.
+            "-vnc", f"127.0.0.1:{vnc_display},websocket={vnc_ws},password=on",
             "-serial", f"file:{console}",
             "-monitor", f"unix:{monitor},server,nowait",
-            "-daemonize",
             "-pidfile", str(pidfile),
         ]
         log("starting QEMU: " + " ".join(cmd[:6]) + " ...")
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            raise ProviderError(f"QEMU did not start: {result.stderr.strip()}")
+        # Not `-daemonize`: on macOS the forked QEMU dies on the first VNC WebSocket connection.
+        # A detached child with its output in a log file behaves the same on every host.
+        qemu_log = run_dir / "qemu.log"
+        with open(qemu_log, "wb") as out:
+            proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=out, stderr=out, start_new_session=True)
+        threading.Thread(target=proc.wait, daemon=True).start()  # reap it when it exits
+        for _ in range(40):  # up to ~10 s for QEMU to open its monitor, or to fail
+            if proc.poll() is not None:
+                tail = qemu_log.read_text(errors="replace").strip()[-600:]
+                raise ProviderError(f"QEMU did not start: {tail or f'exit code {proc.returncode}'}")
+            if Path(monitor).exists() and pidfile.exists():
+                break
+            time.sleep(0.25)
         runtime = {
             "provider": self.name,
             "overlay": str(overlay),
@@ -187,9 +240,27 @@ class QemuProvider(Provider):
             "screen": str(screen),
             "sshPort": ssh_port,
             "winrmPort": winrm_port if family == "windows" else None,
+            "vncWsPort": vnc_ws,
         }
+        password = vnc_password()
+        for _ in range(20):
+            if Path(monitor).exists():
+                break
+            time.sleep(0.25)
+        try:
+            qemu_monitor(str(monitor), f"set_password vnc {password}")
+            runtime["vncPassword"] = password
+        except OSError as exc:
+            log(f"could not protect the live desktop with a password, so it is switched off: {exc}")
+            runtime["vncWsPort"] = None
+        if early is not None:
+            early(dict(runtime))  # the live desktop is usable while the guest is still booting
         port = winrm_port if family == "windows" else ssh_port
-        log(f"VM started (PID {pidfile.read_text().strip() if pidfile.exists() else '?'}); waiting for the guest")
+        log(f"VM started (PID {pidfile.read_text().strip() if pidfile.exists() else '?'})")
+        if (image.get("guest") or {}).get("waitForGuest") is False:
+            log("desktop-only boot: not waiting for SSH/WinRM. Use the live desktop on the page; audits need SSH/WinRM.")
+            return runtime
+        log("waiting for the guest")
         wait_port("127.0.0.1", port, float((image.get("guest") or {}).get("bootTimeout") or 300), log, cancel)
         return runtime
 
@@ -208,7 +279,7 @@ class QemuProvider(Provider):
             except OSError:
                 pass
             log("VM stopped")
-        Path(runtime.get("monitor") or "").unlink(missing_ok=True)
+        _drop_monitor(runtime)
         overlay = Path(runtime.get("overlay") or "")
         if overlay.exists():
             overlay.unlink(missing_ok=True)
@@ -339,6 +410,16 @@ def by_name(name: str | None) -> Provider | None:
     return klass() if klass else None
 
 
+def _drop_monitor(runtime: dict) -> None:
+    monitor = Path(runtime.get("monitor") or "")
+    if monitor.name == "m.sock":
+        monitor.unlink(missing_ok=True)
+        try:
+            monitor.parent.rmdir()
+        except OSError:
+            pass
+
+
 def force_stop(runtime: dict) -> None:
     """Kill a VM left behind by an agent that was closed (best effort)."""
     pidfile = Path(runtime.get("pidfile") or "")
@@ -347,6 +428,7 @@ def force_stop(runtime: dict) -> None:
             os.kill(int(pidfile.read_text().strip()), signal.SIGKILL)
         except (ValueError, OSError):
             pass
+    _drop_monitor(runtime)
     overlay = Path(runtime.get("overlay") or "")
     if overlay.exists():
         overlay.unlink(missing_ok=True)

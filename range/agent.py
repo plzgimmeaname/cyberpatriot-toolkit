@@ -94,6 +94,7 @@ class Range:
         self.session_cancels: dict[str, threading.Event] = {}
         self.sessions_file = self.data / "sessions.json"
         self.screen_cache: dict[str, tuple[int, bytes]] = {}
+        self.vnc_secrets: dict[str, str] = {}
         self._load()
         self._load_sessions()
         threading.Thread(target=self._worker, daemon=True, name="range-worker").start()
@@ -195,14 +196,15 @@ class Range:
             guest["passwordEnv"] = "RAMPART_WIN_PASSWORD"
             if body.get("winrmPort"):
                 guest["winrmPort"] = int(body["winrmPort"])
+            if body.get("desktopOnly") or not os.environ.get("RAMPART_WIN_PASSWORD"):
+                guest["desktopOnly"] = True
         else:
             key = str(body.get("keyFile") or "").strip()
-            if not key:
-                raise ValueError(
-                    "this looks like a Linux/FreeBSD image: give the SSH private key that is already inside the "
-                    "template (guest.keyFile, e.g. ~/.ssh/rampart_mint). Without it the script cannot get in."
-                )
-            guest["keyFile"] = key
+            if key:
+                guest["keyFile"] = key
+            else:
+                # A stock image has no key installed: it can still be booted and used from the live desktop.
+                guest["desktopOnly"] = True
         entry: dict = {
             "id": image_id,
             "name": name,
@@ -258,10 +260,11 @@ class Range:
                 entry["detail"] = "the agent was closed while this VM was booted; the VM was shut down"
             self.sessions[entry["id"]] = entry
 
-    def boot_image(self, image_id: str) -> dict:
+    def boot_image(self, image_id: str, desktop_only: bool = False) -> dict:
         image = self.catalog.get(image_id)
         if image is None:
             raise KeyError(image_id)
+        desktop_only = bool(desktop_only or (image.get("guest") or {}).get("desktopOnly"))
         if self.catalog.base_disk(image_id) is None:
             raise ValueError("pull the image before booting it")
         with self.lock:
@@ -282,6 +285,7 @@ class Range:
                 "console": None,
                 "host": None,
                 "port": None,
+                "desktopOnly": bool(desktop_only),
             }
             self.session_cancels[sid] = threading.Event()
         self._save_sessions()
@@ -300,6 +304,9 @@ class Range:
             base = self.catalog.base_disk(image["id"])
             if base is None:
                 raise RuntimeError("the image was removed from the data folder; pull it again")
+            if session.get("desktopOnly"):
+                # Stock CyberPatriot images have no SSH key or WinRM: boot them anyway and just show the desktop.
+                image = {**image, "guest": {**(image.get("guest") or {}), "waitForGuest": False}}
             provider = providers.for_image(image)
             ok, why = provider.available()
             log(f"provider: {provider.name} ({why})")
@@ -309,7 +316,23 @@ class Range:
             with self.lock:
                 session["detail"] = f"booting with {provider.name}"
             self._save_sessions()
-            runtime = provider.start(image, base, run_dir, log, cancel)
+            def early(rt: dict) -> None:
+                # QEMU is up but the guest is still booting: show the desktop now, and remember the
+                # runtime so a failed boot still shuts the VM down.
+                nonlocal runtime
+                password = rt.pop("vncPassword", None)
+                if password:
+                    self.vnc_secrets[sid] = password  # memory only: never written to sessions.json
+                runtime = rt
+                with self.lock:
+                    session["runtime"] = rt
+                self._save_sessions()
+
+            if provider.name == "qemu":
+                runtime = provider.start(image, base, run_dir, log, cancel, early=early)
+            else:
+                runtime = provider.start(image, base, run_dir, log, cancel)
+            runtime.pop("vncPassword", None)
             with self.lock:
                 session.update(
                     state="running",
@@ -356,6 +379,7 @@ class Range:
         with self.lock:
             session.update(state="stopped", stoppedAt=now(), detail="stopped")
             session["runtime"] = None
+            self.vnc_secrets.pop(sid, None)
         self._save_sessions()
         return {"ok": True}
 
@@ -377,16 +401,54 @@ class Range:
         shutil.rmtree(self.data / "sessions" / sid, ignore_errors=True)
         (self.data / "sessions" / f"{sid}.log").unlink(missing_ok=True)
         self._save_sessions()
-        return {"reset": True, **self.boot_image(image["id"])}
+        return {"reset": True, **self.boot_image(image["id"], bool(session.get("desktopOnly")))}
+
+    def _reap_dead(self, sid: str) -> None:
+        """A QEMU that crashed or was killed must not stay listed as running."""
+        session = self.sessions[sid]
+        runtime = session.get("runtime") or {}
+        pidfile = Path(runtime.get("pidfile") or "")
+        if session.get("provider") != "qemu" or session["state"] != "running" or not pidfile.exists():
+            return
+        try:
+            os.kill(int(pidfile.read_text().strip()), 0)
+        except ProcessLookupError:
+            with self.lock:
+                session.update(state="stopped", stoppedAt=now(), detail="the VM process ended (shut down or crashed)", runtime=None)
+                self.vnc_secrets.pop(sid, None)
+            self._session_log(sid, "the QEMU process is gone")
+            self._save_sessions()
+        except (ValueError, OSError):
+            pass
 
     def public_session(self, sid: str) -> dict:
+        self._reap_dead(sid)
         session = self.sessions[sid]
         out = {k: v for k, v in session.items() if k != "runtime"}
         console = session.get("console")
         out["consoleAvailable"] = bool(console and Path(console).exists())
-        out["canRun"] = session["state"] == "running"
         out["screenAvailable"] = session.get("provider") == "qemu" and bool((session.get("runtime") or {}).get("monitor"))
+        out["desktopAvailable"] = bool(
+            session.get("provider") == "qemu"
+            and session["state"] in {"running", "booting"}
+            and (session.get("runtime") or {}).get("vncWsPort")
+            and sid in self.vnc_secrets
+        )
+        out["canRun"] = session["state"] == "running" and not session.get("desktopOnly")
         return out
+
+    def session_desktop(self, sid: str) -> dict:
+        """What the page's noVNC viewer needs: a loopback WebSocket address and the one-time password."""
+        with self.lock:
+            session = self.sessions.get(sid)
+            if session is None:
+                raise KeyError(sid)
+            runtime = session.get("runtime") or {}
+            port = runtime.get("vncWsPort")
+            password = self.vnc_secrets.get(sid)
+        if session.get("provider") != "qemu" or not port or not password or session["state"] != "running":
+            raise ValueError("this VM has no live desktop: it needs the qemu provider and to be fully booted")
+        return {"host": "127.0.0.1", "port": port, "password": password, "path": ""}
 
     def sessions_public(self) -> list[dict]:
         with self.lock:
@@ -734,6 +796,10 @@ class Handler(BaseHTTPRequestHandler):
                 if m:
                     self._send(200, rng.session_screen(m.group(1)), "image/png")
                     return
+                m = re.match(r"^/api/sessions/([A-Za-z0-9_.-]+)/desktop$", path)
+                if m:
+                    self._send(200, rng.session_desktop(m.group(1)))
+                    return
                 m = re.match(r"^/api/sessions/([A-Za-z0-9_.-]+)/console$", path)
                 if m:
                     offset = int(query.get("offset", ["0"])[0] or 0)
@@ -800,7 +866,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             m = re.match(r"^/api/images/([A-Za-z0-9_.-]+)/boot$", path)
             if m:
-                self._send(202, rng.boot_image(m.group(1)))
+                self._send(202, rng.boot_image(m.group(1), bool(self._body().get("desktopOnly"))))
                 return
             m = re.match(r"^/api/sessions/([A-Za-z0-9_.-]+)/reset$", path)
             if m:

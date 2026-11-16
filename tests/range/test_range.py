@@ -9,7 +9,10 @@ creates the ZipCrypto password); it is skipped when that is not installed.
 from __future__ import annotations
 
 import argparse
+import base64
+import os
 import shutil
+import socket
 import struct
 import subprocess
 import sys
@@ -26,6 +29,7 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "range"))
 
 import agent  # noqa: E402
+import providers  # noqa: E402
 import screen  # noqa: E402
 
 
@@ -132,12 +136,90 @@ class AddImageTest(unittest.TestCase):
         self.assertIn(second, sessions)
         self.assertFalse((self.data / "sessions" / first).exists(), "the old overlay folder is deleted")
 
+    def test_image_without_a_key_boots_as_desktop_only(self) -> None:
+        created = self.range.add_image(
+            {"url": f"{self.server.url}/Mint21_Practice.zip", "name": "stock", "family": "linux", "password": "s3cret"}
+        )
+        self.assertTrue(self.range.catalog.get(created["id"])["guest"]["desktopOnly"])
+        self._wait(created["id"])
+
     def test_missing_password_says_so(self) -> None:
         created = self._add("Mint 21 no password", "")
         state = self._wait(created["id"])
 
         self.assertEqual(state["state"], "error")
         self.assertIn("password protected", state["detail"])
+
+
+class DesktopTest(unittest.TestCase):
+    """The live desktop: the page gets a loopback WebSocket address and a one-time password."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.range = agent.Range(
+            argparse.Namespace(repo=str(REPO), data=str(self.tmp / "data"), catalog=str(self.tmp / "images.json"))
+        )
+        self.range.sessions["vm-1"] = {
+            "id": "vm-1", "imageId": "x", "imageName": "x", "state": "running", "startedAt": "now",
+            "stoppedAt": None, "detail": "", "provider": "qemu", "console": None, "host": None, "port": None,
+            "runtime": {"vncWsPort": 5999, "pidfile": str(self.tmp / "qemu.pid")},
+        }
+
+    def test_desktop_needs_the_password_and_never_lists_it(self) -> None:
+        with self.assertRaises(ValueError):
+            self.range.session_desktop("vm-1")
+        self.range.vnc_secrets["vm-1"] = "Abcd2345"
+        info = self.range.session_desktop("vm-1")
+        self.assertEqual((info["host"], info["port"], info["password"]), ("127.0.0.1", 5999, "Abcd2345"))
+        public = self.range.public_session("vm-1")
+        self.assertTrue(public["desktopAvailable"])
+        self.assertNotIn("Abcd2345", repr(public))
+
+    def test_a_dead_qemu_is_not_listed_as_running(self) -> None:
+        gone = subprocess.Popen([sys.executable, "-c", "pass"])
+        gone.wait()
+        (self.tmp / "qemu.pid").write_text(str(gone.pid))
+        self.range.vnc_secrets["vm-1"] = "Abcd2345"
+        public = self.range.public_session("vm-1")
+        self.assertEqual(public["state"], "stopped")
+        self.assertFalse(public["desktopAvailable"])
+        self.assertNotIn("vm-1", self.range.vnc_secrets)
+
+    def test_vnc_password_fits_the_protocol(self) -> None:
+        passwords = {providers.vnc_password() for _ in range(20)}
+        self.assertTrue(all(len(p) == 8 and p.isalnum() for p in passwords))
+        self.assertGreater(len(passwords), 15)
+
+
+@unittest.skipUnless(
+    shutil.which("qemu-system-x86_64") and shutil.which("qemu-img"), "QEMU is needed to boot a throw-away VM"
+)
+class QemuDesktopTest(unittest.TestCase):
+    def test_qemu_serves_the_desktop_over_a_websocket(self) -> None:
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        base = tmp / "blank.qcow2"
+        subprocess.run(["qemu-img", "create", "-q", "-f", "qcow2", str(base), "64M"], check=True)
+        run_dir = tmp / "run"
+        run_dir.mkdir()
+        image = {"id": "t", "family": "linux", "guest": {"waitForGuest": False, "accel": "tcg", "ramMb": 128, "cpus": 1}}
+        provider = providers.QemuProvider()
+        runtime = provider.start(image, base, run_dir, lambda text: None)
+        self.addCleanup(provider.stop, runtime, lambda text: None)
+        password = runtime["vncPassword"]
+        self.assertEqual(len(password), 8)
+        sock = socket.create_connection(("127.0.0.1", runtime["vncWsPort"]), timeout=10)
+        key = base64.b64encode(os.urandom(16)).decode()
+        sock.sendall(
+            (
+                "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: binary\r\n\r\n"
+            ).encode()
+        )
+        reply = sock.recv(512)
+        sock.close()
+        self.assertIn(b"101", reply.split(b"\r\n")[0], reply)
 
 
 class ScreenTest(unittest.TestCase):

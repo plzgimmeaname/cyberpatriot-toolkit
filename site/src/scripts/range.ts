@@ -41,6 +41,12 @@ interface RangeRun {
   logBytes?: number;
 }
 
+interface DesktopInfo {
+  host: string;
+  port: number;
+  password: string;
+}
+
 interface RangeSession {
   id: string;
   imageId: string;
@@ -55,6 +61,8 @@ interface RangeSession {
   consoleAvailable: boolean;
   canRun: boolean;
   screenAvailable: boolean;
+  desktopAvailable?: boolean;
+  desktopOnly?: boolean;
 }
 
 interface Finding {
@@ -106,6 +114,8 @@ const state = {
   sessionTimer: 0,
   screenTimer: 0,
   screenUrl: '',
+  rfb: null as null | { disconnect(): void; sendCtrlAltDel(): void; scaleViewport: boolean },
+  rfbSession: '',
 };
 
 function byId<T extends HTMLElement>(id: string): T | null {
@@ -241,6 +251,14 @@ function renderImages(): void {
     boot.dataset.image = image.id;
     boot.disabled = image.state !== 'ready' || Boolean(live);
     actions.append(boot);
+
+    const desk = el('button', 'cp-btn cp-btn--sm', 'Boot desktop only');
+    desk.type = 'button';
+    desk.dataset.action = 'boot-desktop';
+    desk.dataset.image = image.id;
+    desk.title = 'Boot without waiting for SSH/WinRM: for stock images. You use the machine in the browser.';
+    desk.disabled = image.state !== 'ready' || Boolean(live);
+    actions.append(desk);
 
     for (const mode of ['audit', 'apply'] as const) {
       const btn = el('button', `cp-btn cp-btn--sm${mode === 'audit' ? ' cp-btn--primary' : ''}`, mode === 'audit' ? 'Run audit' : 'Run apply');
@@ -568,7 +586,18 @@ async function refreshSessions(): Promise<void> {
   state.sessions = data.sessions;
   renderSessions();
   renderImages();
-  if (state.session) await pollSession(state.session);
+  if (state.session) {
+    const current = state.sessions.find((sess) => sess.id === state.session);
+    const desktop = byId<HTMLElement>('session-desktop-wrap');
+    if (current?.desktopAvailable && desktop?.hidden) {
+      desktop.hidden = false;
+      const frame = byId<HTMLElement>('session-screen-wrap');
+      if (frame) frame.hidden = true;
+      stopScreenTimerOnly();
+      void connectDesktop(current.id);
+    }
+    await pollSession(state.session);
+  }
   window.clearTimeout(state.sessionTimer);
   if (state.sessions.some((sess) => sess.state === 'booting' || sess.state === 'running' || sess.state === 'stopping')) {
     state.sessionTimer = window.setTimeout(() => void refreshSessions(), 2500);
@@ -643,7 +672,61 @@ async function pollSession(id: string): Promise<void> {
   }
 }
 
+function setDesktopStatus(text: string, kind: 'ok' | 'error' | '' = ''): void {
+  const status = byId<HTMLElement>('session-desktop-status');
+  if (!status) return;
+  status.textContent = text;
+  status.dataset.kind = kind;
+}
+
+function disconnectDesktop(): void {
+  try {
+    state.rfb?.disconnect();
+  } catch {
+    /* already closed */
+  }
+  state.rfb = null;
+  state.rfbSession = '';
+}
+
+/** Connect the live desktop: QEMU serves VNC over a loopback WebSocket, noVNC draws it in the page. */
+async function connectDesktop(id: string): Promise<void> {
+  const target = byId<HTMLElement>('session-desktop');
+  if (!target) return;
+  disconnectDesktop();
+  target.replaceChildren();
+  setDesktopStatus('Connecting…');
+  try {
+    const info = await api<DesktopInfo>(`/api/sessions/${id}/desktop`);
+    const { default: RFB } = await import('@novnc/novnc');
+    // The agent lives at state.url; QEMU's WebSocket listens on the same machine.
+    const host = new URL(state.url).hostname || info.host;
+    const rfb = new RFB(target, `ws://${host}:${info.port}`, { credentials: { password: info.password } });
+    rfb.scaleViewport = true;
+    rfb.resizeSession = false;
+    rfb.background = '#000';
+    rfb.addEventListener('connect', () => {
+      if (state.session === id) setDesktopStatus('Connected. Click inside to type and use the mouse.', 'ok');
+    });
+    rfb.addEventListener('disconnect', (event: Event) => {
+      const clean = (event as CustomEvent<{ clean: boolean }>).detail?.clean;
+      if (state.rfb === rfb) state.rfb = null;
+      setDesktopStatus(clean ? 'Disconnected.' : 'Connection lost. The VM may still be booting: press Connect again.', clean ? '' : 'error');
+    });
+    state.rfb = rfb;
+    state.rfbSession = id;
+  } catch (error) {
+    setDesktopStatus(error instanceof Error ? error.message : String(error), 'error');
+  }
+}
+
+function stopScreenTimerOnly(): void {
+  window.clearInterval(state.screenTimer);
+  state.screenTimer = 0;
+}
+
 function stopScreen(): void {
+  disconnectDesktop();
   window.clearInterval(state.screenTimer);
   state.screenTimer = 0;
   if (state.screenUrl) {
@@ -680,9 +763,15 @@ async function selectSession(id: string): Promise<void> {
   const session = state.sessions.find((sess) => sess.id === id);
   const title = byId<HTMLHeadingElement>('session-title');
   if (title) title.textContent = `Console · ${session?.imageName ?? id}`;
+  disconnectDesktop();
+  const desktop = byId<HTMLElement>('session-desktop-wrap');
+  if (desktop) desktop.hidden = !session?.desktopAvailable;
   const wrap = byId<HTMLElement>('session-screen-wrap');
-  if (wrap) wrap.hidden = !session?.screenAvailable;
-  if (session?.screenAvailable) {
+  if (session?.desktopAvailable) {
+    if (wrap) wrap.hidden = true;
+    void connectDesktop(id);
+  } else if (wrap) wrap.hidden = !session?.screenAvailable;
+  if (!session?.desktopAvailable && session?.screenAvailable) {
     void refreshScreen(id);
     state.screenTimer = window.setInterval(() => void refreshScreen(id), 2000);
   }
@@ -690,9 +779,9 @@ async function selectSession(id: string): Promise<void> {
   view?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-async function bootImage(id: string): Promise<void> {
+async function bootImage(id: string, desktopOnly = false): Promise<void> {
   try {
-    const created = await api<{ id: string }>(`/api/images/${id}/boot`, { method: 'POST', body: '{}' });
+    const created = await api<{ id: string }>(`/api/images/${id}/boot`, { method: 'POST', body: JSON.stringify({ desktopOnly }) });
     message('Booting the VM. The console appears under Booted VMs when the guest answers.', 'ok');
     await refreshSessions();
     await selectSession(created.id);
@@ -797,6 +886,18 @@ function wire(): void {
     void refreshRuns();
     void refreshSessions();
   });
+  document.querySelector('.rg__desktop-actions')?.addEventListener('click', (event) => {
+    const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button[data-desktop]');
+    if (!button || !state.session) return;
+    const act = button.dataset.desktop;
+    if (act === 'connect') void connectDesktop(state.session);
+    if (act === 'disconnect') {
+      disconnectDesktop();
+      setDesktopStatus('Disconnected.');
+    }
+    if (act === 'cad') state.rfb?.sendCtrlAltDel();
+    if (act === 'fullscreen') void byId<HTMLElement>('session-desktop')?.requestFullscreen?.();
+  });
   byId<HTMLButtonElement>('detail-stop')?.addEventListener('click', () => void stopRun());
   byId<HTMLButtonElement>('detail-delete')?.addEventListener('click', () => void deleteRun());
   byId<HTMLButtonElement>('detail-download')?.addEventListener('click', downloadFindings);
@@ -812,6 +913,7 @@ function wire(): void {
     const action = button.dataset.action;
     if (action === 'pull' && button.dataset.image) void pullImage(button.dataset.image);
     if (action === 'boot' && button.dataset.image) void bootImage(button.dataset.image);
+    if (action === 'boot-desktop' && button.dataset.image) void bootImage(button.dataset.image, true);
     if (action === 'console' && button.dataset.session) void selectSession(button.dataset.session);
     if (action === 'stop-session' && button.dataset.session) void stopSession(button.dataset.session);
     if (action === 'reset-session' && button.dataset.session) void resetSession(button.dataset.session);
