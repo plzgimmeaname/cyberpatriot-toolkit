@@ -45,7 +45,10 @@ const quick = ['Took a snapshot', 'Answered a forensics question', 'Ran the scri
     </section>
 
     <ol class="rl__list" data-rl-list></ol>
-    <p class="rl__empty" data-rl-empty>No entries yet. Start with “Took a snapshot”.</p>
+    <div class="cp-empty rl__empty" data-rl-empty>
+      <p class="cp-empty__title">No entries yet</p>
+      <p class="cp-empty__text">Log each change as you make it. Start with “Took a snapshot”: it is the one you will be glad you have.</p>
+    </div>
 
     <div class="rl__actions">
       <button type="button" class="cp-btn cp-btn--sm" data-rl-copy>Copy as text</button>
@@ -255,7 +258,8 @@ const quick = ['Took a snapshot', 'Answered a forensics question', 'Ran the scri
     margin-top: 0.75rem;
   }
   .rl__chip {
-    padding: 0.25rem 0.7rem;
+    min-height: var(--cp-tap-sm);
+    padding: 0.3rem 0.85rem;
     border: 1px dashed var(--cp-border);
     border-radius: var(--cp-radius-sm);
     background: transparent;
@@ -344,7 +348,7 @@ const quick = ['Took a snapshot', 'Answered a forensics question', 'Ran the scri
   }
   .rl :global(.rl__time small) {
     color: var(--sl-color-gray-3);
-    font-size: 0.68rem;
+    font-size: 0.8125rem;
   }
   .rl :global(.rl__what) {
     display: grid;
@@ -388,7 +392,6 @@ const quick = ['Took a snapshot', 'Answered a forensics question', 'Ran the scri
   }
   .rl__empty {
     margin: 0;
-    color: var(--sl-color-gray-3);
   }
   .rl__actions {
     display: flex;

@@ -6,7 +6,8 @@ import Default from '@astrojs/starlight/components/Hero.astro';
 import { SEASON } from '../../data/site';
 import UiIcon from '../UiIcon.astro';
 
-const isHome = Astro.url.pathname === '/' || Astro.url.pathname === '/index.html';
+const homePath = withBase('/');
+const isHome = [homePath, homePath + 'index.html'].includes(Astro.url.pathname);
 
 const { data } = Astro.locals.starlightRoute.entry;
 const title = data.hero?.title ?? data.title;
@@ -258,7 +259,7 @@ const tagline = data.hero?.tagline;
     width: 1.2rem;
     height: 1.2rem;
     border-radius: 50%;
-    font-size: 0.7rem;
+    font-size: 0.8125rem;
     font-weight: 800;
   }
   .cp-report__list .ok span {

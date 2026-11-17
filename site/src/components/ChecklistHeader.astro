@@ -130,7 +130,11 @@ const verified = verifiedFor(checklist?.family ?? 'linux');
     display: flex;
     flex-wrap: wrap;
     gap: 0.4rem;
-    margin: 0.6rem 0 0.4rem;
+    margin: 0.75rem 0 0.75rem;
+  }
+  @media (max-width: 40rem) {
+    .cp-cl-actions { gap: 0.5rem; }
+    .cp-cl-actions :global(.cp-btn) { flex: 1 1 auto; }
   }
   .cp-verified {
     display: flex;
@@ -175,6 +179,15 @@ const verified = verifiedFor(checklist?.family ?? 'linux');
     color: var(--sl-color-accent-high);
   }
 </style>
+
+<div class="cp-sticky not-content" data-cp-sticky role="group" aria-label="Checklist progress" inert data-pagefind-ignore>
+  <div class="cp-sticky__text">
+    <p class="cp-sticky__count"><strong data-cp-sticky-count>0/{total}</strong> <span data-cp-sticky-pct>0%</span></p>
+    <p class="cp-sticky__next"><span class="cp-sticky__label">Next</span> <span data-cp-sticky-next>Next step</span></p>
+    <div class="cp-bar" aria-hidden="true"><span class="cp-bar__fill" style="width:0%"></span></div>
+  </div>
+  <button type="button" class="cp-btn cp-btn--primary" data-cp-action="next">Next step <span aria-hidden="true">↓</span></button>
+</div>
 
 <div class="cp-topbar" aria-hidden="true" data-cp-topbar>
   <span class="cp-topbar__fill"></span>

@@ -52,6 +52,10 @@ const lists = CHECKLISTS.map((c) => ({ id: c.id, name: c.name }));
         </label>
         <span class="fd__msg" role="status" data-fd-msg></span>
       </div>
+      <div class="cp-empty fd__placeholder">
+        <p class="cp-empty__title">Your to-do list will appear here</p>
+        <p class="cp-empty__text">One tick box per REVIEW, FAILED or WOULD line, grouped by section, each linked to the checklist step that explains it.</p>
+      </div>
     </section>
 
     <section class="fd__out" data-fd-out hidden>
@@ -383,7 +387,7 @@ const lists = CHECKLISTS.map((c) => ({ id: c.id, name: c.name }));
     flex: none;
     padding: 0 0.45rem;
     border-radius: var(--cp-radius-xs);
-    font-size: 0.68rem;
+    font-size: 0.8125rem;
     font-weight: 700;
   }
   .fd :global(.fd__status--review) {
@@ -414,6 +418,9 @@ const lists = CHECKLISTS.map((c) => ({ id: c.id, name: c.name }));
     border-radius: var(--cp-radius-sm);
     background: var(--sl-color-black);
     font-family: var(--sl-font-mono);
+  }
+  .fd__placeholder {
+    margin-top: 1.25rem;
   }
   .fd :global(.fd__empty) {
     color: var(--sl-color-gray-3);

@@ -197,7 +197,7 @@ const imageNames = MAP;
   }
   .pm__cards {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(20rem, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 20rem), 1fr));
     gap: 0.9rem;
     align-items: start;
   }
@@ -237,7 +237,7 @@ const imageNames = MAP;
   }
   .pm__table thead th {
     color: var(--sl-color-gray-3);
-    font-size: 0.68rem;
+    font-size: 0.8125rem;
     letter-spacing: 0.05em;
     text-transform: uppercase;
   }

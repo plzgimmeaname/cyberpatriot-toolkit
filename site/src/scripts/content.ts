@@ -75,6 +75,7 @@ function initSteps(content: HTMLElement) {
   }
 
   const progress = document.querySelector<HTMLElement>('[data-cp-progress]');
+  const sticky = document.querySelector<HTMLElement>('[data-cp-sticky]');
   const hideBtn = progress?.querySelector<HTMLButtonElement>('[data-cp-action="hide"]');
   const hideKey = `hide-finished`;
   const compactKey = `compact-view`;
@@ -103,6 +104,19 @@ function initSteps(content: HTMLElement) {
     }
     const topFill = document.querySelector<HTMLElement>('[data-cp-topbar] .cp-topbar__fill');
     if (topFill) topFill.style.width = `${pct}%`;
+    // The first unfinished step is the "current" one: highlight it, and say what it is in the sticky bar
+    const current = steps.find((s) => !done.has(s.id));
+    for (const s of steps) s.el.classList.toggle('is-current', s === current);
+    if (sticky) {
+      sticky.querySelector('[data-cp-sticky-count]')!.textContent = `${count}/${total}`;
+      sticky.querySelector('[data-cp-sticky-pct]')!.textContent = `${pct}%`;
+      sticky.querySelector<HTMLElement>('.cp-bar__fill')!.style.width = `${pct}%`;
+      sticky.classList.toggle('is-complete', total > 0 && count === total);
+      const label = current ? (current.el.querySelector('h3,h4')?.textContent ?? '').replace(/^[✓\s]+/, '').trim() : '';
+      sticky.querySelector('[data-cp-sticky-next]')!.textContent = current ? label || 'Next step' : 'All steps done';
+      const btn = sticky.querySelector<HTMLButtonElement>('[data-cp-action="next"]');
+      if (btn) btn.disabled = !current;
+    }
     renderTocCounts(steps, done);
     const compact = getValue<boolean>(compactKey, false);
     content.classList.toggle('cp-compact', compact);
@@ -120,7 +134,7 @@ function initSteps(content: HTMLElement) {
     });
   }
 
-  progress?.addEventListener('click', (e) => {
+  const onAction = (e: Event) => {
     const action = (e.target as HTMLElement).closest<HTMLElement>('[data-cp-action]')?.dataset.cpAction;
     if (!action) return;
     if (action === 'next') {
@@ -150,7 +164,21 @@ function initSteps(content: HTMLElement) {
     } else if (action === 'reset') {
       if (confirm('Clear every tick on this checklist? Do this when you start a fresh image.')) resetSteps(page);
     }
-  });
+  };
+  progress?.addEventListener('click', onAction);
+  sticky?.addEventListener('click', onAction);
+
+  // Show the sticky summary once the progress card has scrolled off the top
+  if (progress && sticky && 'IntersectionObserver' in window) {
+    new IntersectionObserver(
+      ([entry]) => {
+        const on = !entry.isIntersecting && entry.boundingClientRect.top < 0;
+        sticky.classList.toggle('is-on', on);
+        sticky.toggleAttribute('inert', !on);
+      },
+      { rootMargin: '-56px 0px 0px 0px' },
+    ).observe(progress);
+  }
 
   if (!storageAvailable()) progress?.querySelector<HTMLElement>('[data-cp-storage-warning]')?.removeAttribute('hidden');
   render();
