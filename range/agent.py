@@ -55,7 +55,7 @@ import screen as screen_mod  # noqa: E402
 import providers  # noqa: E402
 import runner  # noqa: E402
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 MAX_BODY = 1 << 20
 MAX_LOG_BYTES = 2 << 20
 
