@@ -28,33 +28,39 @@ const setupCommands = [
 >
   <div class="rg cp-wide not-content">
     <p class="rg__lead">
-      <strong>Paste a download link, its checksum and the unzip password</strong> and the range downloads the image, checks it,
-      unpacks it and boots it on this computer. You then use the VM in this page and run the hardening script inside it. A small
-      agent on your computer owns the VMs; this page is the remote control.
+      <strong>Paste a download link, its checksum and the unzip password</strong>{' '}and the range downloads the image, checks it,
+      unpacks it and boots it on this computer. You then use the VM in this page and run the hardening script inside it.
     </p>
 
-    <div class="cp-callout cp-callout--warn">
+    <div id="range-bar" class="rg__bar" hidden>
+      <span id="range-bar-status" class="rg__bar-status"><span class="rg__dot" aria-hidden="true"></span>Connected</span>
+      <span class="rg__bar-actions">
+        <button type="button" class="cp-btn cp-btn--sm" id="range-help-btn" aria-expanded="false" aria-controls="range-intro">How it works</button>
+        <button type="button" class="cp-btn cp-btn--sm" id="range-disconnect-btn">Disconnect</button>
+      </span>
+    </div>
+
+    <div id="range-intro" class="rg__intro">
+    <div class="cp-callout cp-callout--success rg__get">
       <p>
-        <strong>The website cannot start a VM by itself.</strong> It is static, so the range agent
-        (<code>range/agent.py</code>) must be running on the computer that has QEMU (Linux/macOS) or Hyper-V (Windows). The
-        <strong>add-image form, the VM list and the live desktop appear here once you are connected</strong>: use the launcher and
-        you are connected automatically. Everything travels between your browser and <code>127.0.0.1</code>; nothing is uploaded.
+        <strong>Get the agent:</strong>{' '}
+        <a href={withBase('/files/rampart-range.zip')} download>rampart-range.zip</a>{' '}
+        (macOS, Linux and Windows: unzip, then double-click <code>Start Range</code>) or the single file{' '}
+        <a href={withBase('/files/rampart-range.pyz')} download>rampart-range.pyz</a>{' '}
+        (<code>python3 rampart-range.pyz</code>). It needs Python 3.9+ and, to boot images, QEMU. Checksums:{' '}
+        <a href={withBase('/files/rampart-range.sha256')}>rampart-range.sha256</a>.
       </p>
       <p>
-        CyberPatriot practice images come to coaches through the competition portal, so the link is <strong>your own copy</strong>
-        of the image (your file server or the link you were given). An image with no SSH key in it still boots: use
-        <strong>Boot desktop only</strong> and work in it from this page.
+        The website cannot start a VM by itself: it is static, so the agent has to run on the computer that boots the images.
+        Everything travels between your browser and <code>127.0.0.1</code>; nothing is uploaded.
       </p>
     </div>
 
-    <div class="cp-callout cp-callout--success rg__get">
+    <div class="cp-callout cp-callout--warn">
       <p>
-        <strong>Get the agent:</strong>
-        <a href={withBase('/files/rampart-range.zip')} download>rampart-range.zip</a>
-        (macOS, Linux and Windows: unzip, then double-click <code>Start Range</code>) or the single file
-        <a href={withBase('/files/rampart-range.pyz')} download>rampart-range.pyz</a>
-        (<code>python3 rampart-range.pyz</code>). It needs Python 3.9+ and, to boot images, QEMU. Checksums:
-        <a href={withBase('/files/rampart-range.sha256')}>rampart-range.sha256</a>.
+        CyberPatriot practice images come to coaches through the competition portal, so the link is{' '}
+        <strong>your own copy</strong> of the image (your file server or the link you were given). An image with no SSH key in
+        it still boots: use <strong>Boot desktop only</strong>, then work in it from this page.
       </p>
     </div>
 
@@ -117,14 +123,86 @@ const setupCommands = [
         and use the page there.
       </p>
     </section>
+    </div>
 
-    <p id="range-msg" class="rg__msg" hidden></p>
+    <p id="range-msg" class="rg__msg" role="status" aria-live="polite" hidden></p>
 
     <div id="range-live" hidden>
+      <details id="range-check" class="rg__card rg__check-card" hidden>
+        <summary><span id="range-check-summary">Setup check</span></summary>
+        <ul id="range-check-list" class="rg__checks"></ul>
+        <p class="cp-hint">This is what the agent found on this computer. A warning is not an error: the range still works, just slower or with fewer features.</p>
+      </details>
+
+      <section class="rg__card" aria-labelledby="range-add-title">
+        <h2 id="range-add-title">Add an image from a link</h2>
+        <p class="cp-hint">
+          Big images take a while: the card shows each step (download, checksum, unpack, convert) with its progress, and a
+          dropped connection continues where it stopped.
+        </p>
+        <form class="rg__form rg__form--add" onsubmit="return false">
+          <label class="rg__wide">
+            <span>Download link</span>
+            <input id="add-url" type="url" placeholder="https://… .zip / .ova / .qcow2" spellcheck="false" autocomplete="off" />
+          </label>
+          <label>
+            <span>Unzip password <em>(if it has one)</em></span>
+            <input id="add-password" type="password" autocomplete="off" placeholder="used once, never saved" />
+          </label>
+          <label>
+            <span>Checksum <em>(recommended)</em></span>
+            <input id="add-sha" type="text" placeholder="paste it as shown" spellcheck="false" autocomplete="off" />
+          </label>
+          <small id="add-sha-hint" class="cp-hint rg__wide" role="status" aria-live="polite">The download is checked against it, and the image is deleted if it does not match.</small>
+          <details class="rg__more rg__wide">
+            <summary>More options</summary>
+            <div class="rg__grid">
+              <label>
+                <span>Name</span>
+                <input id="add-name" type="text" placeholder="Mint 21 practice" spellcheck="false" autocomplete="off" />
+              </label>
+              <label>
+                <span>Operating system</span>
+                <select id="add-family">
+                  <option value="linux">Linux (Mint / Debian / Ubuntu)</option>
+                  <option value="windows">Windows</option>
+                  <option value="freebsd">FreeBSD</option>
+                </select>
+              </label>
+              <label>
+                <span>SSH private key <em>(only to run the script in the VM)</em></span>
+                <input id="add-key" type="text" placeholder="~/.ssh/rampart_mint" spellcheck="false" autocomplete="off" />
+              </label>
+              <label>
+                <span>Guest user</span>
+                <input id="add-user" type="text" placeholder="student / Administrator" spellcheck="false" autocomplete="off" />
+              </label>
+            </div>
+          </details>
+          <label class="rg__check rg__wide">
+            <input id="add-boot" type="checkbox" checked />
+            <span>Open the VM when the download finishes</span>
+          </label>
+          <div class="rg__form-actions rg__wide">
+            <button id="add-btn" class="cp-btn cp-btn--primary" type="button">Download &amp; boot</button>
+          </div>
+        </form>
+        <p class="cp-hint">
+          The password goes only to the agent on this computer, is used once and is never written to disk. Files encrypted
+          with AES (7-Zip, or WinZip's AES option) need <code>7zip</code> installed on the range host; plain ZIP passwords
+          work everywhere.
+        </p>
+      </section>
+
+      <section class="rg__card" aria-labelledby="range-images-title">
+        <h2 id="range-images-title">Images</h2>
+        <div id="range-images" class="rg__images"></div>
+      </section>
+
       <section class="rg__card" aria-labelledby="range-config-title">
         <div class="rg__card-head">
-          <h2 id="range-config-title">README answers</h2>
-          <button id="range-refresh-btn" class="cp-btn cp-btn--sm" type="button">Refresh</button>
+          <h2 id="range-config-title">README answers <span class="cp-hint">for audits</span></h2>
+          <button id="range-refresh-btn" class="cp-btn cp-btn--sm" type="button">Refresh lists</button>
         </div>
         <p class="cp-hint">The same three lists the script would ask for. They are written into the guest's config file for every run.</p>
         <div class="rg__grid">
@@ -143,67 +221,6 @@ const setupCommands = [
         </div>
       </section>
 
-
-      <section class="rg__card" aria-labelledby="range-add-title">
-        <h2 id="range-add-title">Add an image from a link</h2>
-        <p class="cp-hint">
-          Paste the download address (ZIP, OVA, tar.gz, qcow2...) and, if the archive asks for one, the unzip password. The
-          agent downloads it to <code>~/.rampart-range/</code>, verifies the SHA-256 when you give one, unpacks it and boots a
-          throw-away copy.
-        </p>
-        <form class="rg__form rg__form--add" onsubmit="return false">
-          <label class="rg__wide">
-            <span>Download link</span>
-            <input id="add-url" type="url" placeholder="https://files.example.org/Mint21_Practice.zip" spellcheck="false" autocomplete="off" />
-          </label>
-          <label>
-            <span>Unzip password (if the archive has one)</span>
-            <input id="add-password" type="password" autocomplete="off" placeholder="used once, not saved" />
-          </label>
-          <label>
-            <span>Name (optional)</span>
-            <input id="add-name" type="text" placeholder="Mint 21 practice" spellcheck="false" autocomplete="off" />
-          </label>
-          <label>
-            <span>OS family</span>
-            <select id="add-family">
-              <option value="linux">Linux (Mint / Debian / Ubuntu)</option>
-              <option value="windows">Windows</option>
-              <option value="freebsd">FreeBSD</option>
-            </select>
-          </label>
-          <label>
-            <span>SSH private key (optional: leave empty to use the live desktop only)</span>
-            <input id="add-key" type="text" placeholder="~/.ssh/rampart_mint" spellcheck="false" autocomplete="off" />
-          </label>
-          <label>
-            <span>Guest user</span>
-            <input id="add-user" type="text" placeholder="student / Administrator" spellcheck="false" autocomplete="off" />
-          </label>
-          <label>
-            <span>Checksum (optional, recommended)</span>
-            <input id="add-sha" type="text" placeholder="paste it as it appears: MD5, SHA-1, SHA-256 or SHA-512" spellcheck="false" autocomplete="off" />
-            <small id="add-sha-hint" class="cp-hint" role="status" aria-live="polite">The download is checked against it while it downloads, and the image is deleted if it does not match.</small>
-          </label>
-          <label class="rg__check">
-            <input id="add-boot" type="checkbox" checked />
-            <span>Boot it when the download finishes</span>
-          </label>
-          <div class="rg__form-actions rg__wide">
-            <button id="add-btn" class="cp-btn cp-btn--primary" type="button">Download &amp; boot</button>
-          </div>
-        </form>
-        <p class="cp-hint">
-          The password goes only to the agent on this computer, is used once and is never written to disk. Files encrypted
-          with AES (7-Zip, or WinZip's AES option) need <code>7zip</code> installed on the range host; plain ZIP passwords
-          work everywhere.
-        </p>
-      </section>
-
-      <section class="rg__card" aria-labelledby="range-images-title">
-        <h2 id="range-images-title">Images in the catalog</h2>
-        <div id="range-images" class="rg__images"></div>
-      </section>
 
       <section class="rg__card" aria-labelledby="range-sessions-title">
         <div class="rg__card-head">
@@ -453,14 +470,115 @@ const setupCommands = [
   .rg__wide {
     grid-column: 1 / -1;
   }
-  .rg__check {
+  .rg label.rg__check {
     display: flex;
     flex-direction: row;
-    gap: 0.45rem;
+    gap: 0.55rem;
     align-items: center;
   }
-  .rg__check input {
-    width: auto;
+  .rg label.rg__check input {
+    width: 1.1rem;
+    height: 1.1rem;
+    flex: none;
+    margin: 0;
+  }
+  .rg__more > summary,
+  .rg__check-card > summary {
+    cursor: pointer;
+    font-weight: 600;
+    padding: 0.35rem 0;
+  }
+  .rg label em {
+    font-style: normal;
+    color: var(--sl-color-gray-3);
+    font-weight: 400;
+  }
+  .rg__bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem;
+    padding: 0.6rem 0.9rem;
+    border: 1px solid var(--cp-border);
+    border-radius: var(--cp-radius-sm);
+    background: var(--cp-card);
+  }
+  .rg__bar[hidden] {
+    display: none;
+  }
+  .rg__bar-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-weight: 600;
+  }
+  .rg__dot {
+    width: 0.6rem;
+    height: 0.6rem;
+    border-radius: 50%;
+    background: var(--cp-success);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--cp-success) 25%, transparent);
+  }
+  .rg__bar-actions {
+    display: flex;
+    gap: 0.4rem;
+  }
+  .rg__intro {
+    display: grid;
+    gap: 1.25rem;
+  }
+  .rg__intro[hidden] {
+    display: none;
+  }
+  .rg__checks {
+    display: grid;
+    gap: 0.5rem;
+    margin: 0.5rem 0;
+    padding: 0;
+    list-style: none;
+  }
+  .rg__checks li {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.2rem 0.6rem;
+    align-items: start;
+  }
+  .rg__checks .rg__mark {
+    display: grid;
+    place-items: center;
+    width: 1.35rem;
+    height: 1.35rem;
+    border-radius: 50%;
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: #fff;
+    background: var(--cp-success);
+  }
+  .rg__checks li[data-status='warn'] .rg__mark {
+    background: var(--cp-warn);
+  }
+  .rg__checks li[data-status='missing'] .rg__mark {
+    background: var(--cp-danger);
+  }
+  .rg__checks .rg__detail {
+    grid-column: 2;
+    margin: 0;
+    color: var(--sl-color-gray-3);
+    font-size: var(--sl-text-sm);
+  }
+  .rg__fix {
+    grid-column: 2;
+    display: flex;
+    gap: 0.4rem;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .rg__fix code {
+    padding: 0.15rem 0.45rem;
+    border: 1px solid var(--cp-border);
+    border-radius: var(--cp-radius-xs);
+    word-break: break-all;
   }
   .rg__form--add {
     margin-bottom: 0.4rem;

@@ -172,6 +172,19 @@ class Range:
         self.submit(work)
         return {"ok": True, "detail": "started"}
 
+    def delete_image(self, image_id: str) -> dict:
+        if self.catalog.get(image_id) is None:
+            raise KeyError(image_id)
+        with self.lock:
+            busy = image_id in self.jobs
+            running = [s for s in self.sessions.values() if s["imageId"] == image_id and s["state"] in {"booting", "running"}]
+        if busy:
+            raise RuntimeError("this image is being downloaded right now; wait for it to finish")
+        if running:
+            raise RuntimeError("a VM from this image is running: stop it first")
+        freed = self.catalog.remove_image(image_id)
+        return {"deleted": image_id, "freedBytes": freed}
+
     def add_image(self, body: dict) -> dict:
         """Take a pasted download link (+ optional unzip password) from the page."""
         url = str(body.get("url") or "").strip()
@@ -875,7 +888,7 @@ class Handler(BaseHTTPRequestHandler):
         rng = self.range
         try:
             if path == "/api/capabilities":
-                self._send(200, {"capabilities": providers.capabilities(), "repo": str(rng.repo), "data": str(rng.data)})
+                self._send(200, {"capabilities": providers.capabilities(), "checks": providers.setup_checks(rng.data), "repo": str(rng.repo), "data": str(rng.data)})
             elif path == "/api/images":
                 self._send(200, {"images": rng.images()})
             elif path == "/api/runs":
@@ -983,7 +996,17 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized():
             self._error(401, "missing or wrong token")
             return
-        m = re.match(r"^/api/runs/([A-Za-z0-9_.-]+)$", urlparse(self.path).path.rstrip("/"))
+        path = urlparse(self.path).path.rstrip("/")
+        image = re.match(r"^/api/images/([A-Za-z0-9_.-]+)$", path)
+        if image:
+            try:
+                self._send(200, self.range.delete_image(image.group(1)))
+            except KeyError:
+                self._error(404, "no such image")
+            except RuntimeError as exc:
+                self._error(409, str(exc))
+            return
+        m = re.match(r"^/api/runs/([A-Za-z0-9_.-]+)$", path)
         if not m:
             self._error(404, "no such endpoint")
             return

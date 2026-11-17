@@ -24,7 +24,7 @@ import unittest
 import zipfile
 import zlib
 from functools import partial
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -242,6 +242,96 @@ class PackageTest(unittest.TestCase):
         self.assertIn('"ok": true', health)
         unpacked = list((tmp / "data" / "app").glob("*/scripts/linux/harden.sh"))
         self.assertEqual(len(unpacked), 1, "the hardening scripts must be unpacked next to the agent")
+
+
+class _FlakyServer:
+    """Serves one file with Range support, but cuts the FIRST response off halfway."""
+
+    def __init__(self, payload: bytes, resumable: bool = True):
+        outer = self
+        self.requests: list[tuple[str, int]] = []
+        self.payload, self.resumable, self.cut_once = payload, resumable, True
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, fmt: str, *args) -> None:
+                pass
+
+            def do_GET(self) -> None:  # noqa: N802
+                start = 0
+                header = self.headers.get("Range", "")
+                if outer.resumable and header.startswith("bytes="):
+                    start = int(header[6:].split("-")[0])
+                outer.requests.append((header, start))
+                body = outer.payload[start:]
+                self.send_response(206 if start else 200)
+                if start:
+                    self.send_header("Content-Range", f"bytes {start}-{len(outer.payload) - 1}/{len(outer.payload)}")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                if outer.cut_once:
+                    outer.cut_once = False
+                    self.wfile.write(body[: len(body) // 2])
+                    self.wfile.flush()
+                    self.connection.close()  # drop the connection mid-file
+                    return
+                self.wfile.write(body)
+
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+        self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}/Resume_Practice.qcow2"
+
+    def close(self) -> None:
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+class ResumeDownloadTest(unittest.TestCase):
+    def _pull(self, resumable: bool) -> tuple["catalog.Catalog", _FlakyServer, bytes]:
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        payload = os.urandom(3 << 20)
+        server = _FlakyServer(payload, resumable)
+        self.addCleanup(server.close)
+        cat = catalog.Catalog(tmp / "none.json", tmp / "data")
+        cat.add_image({
+            "id": "resume1", "name": "r", "family": "linux", "script": "linux", "guest": {"user": "x"},
+            "source": {"kind": "url", "url": server.url, "checksum": f"sha256:{hashlib.sha256(payload).hexdigest()}"},
+        })
+        cat.pull("resume1", lambda text: None)
+        return cat, server, payload
+
+    def test_a_dropped_connection_continues_where_it_stopped(self) -> None:
+        cat, server, payload = self._pull(resumable=True)
+        self.assertEqual(cat.state_of("resume1")["state"], "ready")
+        self.assertEqual(Path(cat.state_of("resume1")["disk"]).read_bytes(), payload)
+        self.assertEqual(cat.state_of("resume1")["checksumVerified"], "SHA-256")
+        self.assertTrue(any(start > 0 for _, start in server.requests), "the second request must ask for the rest of the file")
+
+    def test_a_server_without_range_support_still_finishes(self) -> None:
+        cat, server, payload = self._pull(resumable=False)
+        self.assertEqual(Path(cat.state_of("resume1")["disk"]).read_bytes(), payload)
+
+    def test_deleting_an_image_frees_its_files(self) -> None:
+        cat, _, _ = self._pull(resumable=True)
+        folder = cat.image_dir("resume1")
+        self.assertTrue(folder.exists())
+        freed = cat.remove_image("resume1")
+        self.assertGreaterEqual(freed, 3 << 20)
+        self.assertFalse(folder.exists())
+        self.assertIsNone(cat.get("resume1"))
+        again = catalog.Catalog(cat.path, cat.data)
+        self.assertIsNone(again.get("resume1"), "a deleted image must not come back after a restart")
+
+
+class SetupCheckTest(unittest.TestCase):
+    def test_every_check_says_how_to_fix_what_is_missing(self) -> None:
+        checks = providers.setup_checks(Path(tempfile.gettempdir()))
+        self.assertTrue(checks)
+        for check in checks:
+            self.assertIn(check["status"], {"ok", "warn", "missing"})
+            if check["status"] != "ok" and check["id"] not in {"speed"}:
+                self.assertTrue(check["fix"], check)
 
 
 class PullProgressTest(unittest.TestCase):

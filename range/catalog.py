@@ -21,6 +21,7 @@ Archive passwords are used once, in memory, and never written to disk.
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -211,6 +212,15 @@ def pick_disk(files: list[Path], wanted: str | None) -> Path:
 def disk_format(path: Path) -> str:
     ext = path.suffix.lower().lstrip(".")
     return {"qcow2": "qcow2", "qcow": "qcow2", "vmdk": "vmdk", "vhdx": "vhdx", "vhd": "vpc", "raw": "raw", "img": "raw"}.get(ext, "qcow2")
+
+
+def _eta(seconds: float) -> str:
+    seconds = int(max(seconds, 0))
+    if seconds >= 3600:
+        return f"{seconds // 3600} h {seconds % 3600 // 60} min"
+    if seconds >= 60:
+        return f"{seconds // 60} min"
+    return f"{seconds} s"
 
 
 def gib(n: float) -> str:
@@ -457,6 +467,26 @@ class Catalog:
         self.entries.append(entry)
         return entry
 
+    def remove_image(self, image_id: str) -> int:
+        """Delete an image's downloaded files (they are many GB) and forget it. Returns the bytes freed."""
+        entry = self.get(image_id)
+        if entry is None:
+            raise CatalogError(f"no image called {image_id}")
+        folder = self.image_dir(image_id)
+        freed = sum(p.stat().st_size for p in folder.rglob("*") if p.is_file()) if folder.exists() else 0
+        shutil.rmtree(folder, ignore_errors=True)
+        self.state.pop(image_id, None)
+        tmp = self.state_file.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self.state, indent=2, sort_keys=True))
+        tmp.replace(self.state_file)
+        if entry in self.added:  # added from the page: forget it; a catalog-file image stays listed, just not downloaded
+            self.added.remove(entry)
+            self.entries.remove(entry)
+            tmp = self.local_file.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"images": self.added}, indent=2))
+            tmp.replace(self.local_file)
+        return freed
+
     def get(self, image_id: str) -> dict | None:
         for entry in self.entries:
             if entry["id"] == image_id:
@@ -595,39 +625,44 @@ class Catalog:
 
     def _download(self, url: str, target: Path, image_id: str, checksum: tuple[str, str] | None, log, cancel) -> None:
         label = HASH_LABELS[checksum[0]] if checksum else ""
-        if target.exists() and checksum and hash_file(target, checksum[0]) == checksum[1]:
-            log(f"already downloaded and the {label} matches: {target}")
-            self.save_state(image_id, checksumVerified=label)
-            return
+        if target.exists():
+            # A finished download from an earlier try (the rename below is atomic): never fetch it twice.
+            if checksum and hash_file(target, checksum[0]) != checksum[1]:
+                log(f"the file from an earlier try does not match the {label}: downloading it again")
+                target.unlink()
+            else:
+                log(f"already downloaded{f' and the {label} matches' if checksum else ''}: {target.name}")
+                if checksum:
+                    self.save_state(image_id, checksumVerified=label)
+                return
         part = target.with_suffix(target.suffix + ".part")
         log(f"downloading {urllib.parse.urlparse(url).netloc}{urllib.parse.urlparse(url).path}")
-        request = urllib.request.Request(url, headers={"User-Agent": "rampart-range/1.0"})
-        digest = hashlib.new(checksum[0]) if checksum else None  # hashed while it downloads: no second pass over a multi-GB file
-        try:
-            with urllib.request.urlopen(request, timeout=60) as response, part.open("wb") as out:
-                total = int(response.headers.get("Content-Length") or 0)
-                done = 0
-                last = -1.0
-                while True:
+        attempts = 0
+        while True:
+            try:
+                self._fetch(url, part, image_id, log, cancel)
+                break
+            except CatalogError:
+                raise
+            except (urllib.error.URLError, OSError, http.client.HTTPException, TimeoutError) as exc:
+                attempts += 1
+                kept = part.stat().st_size if part.exists() else 0
+                if attempts > 6:
+                    raise CatalogError(
+                        f"download failed after {attempts} tries: {exc}. The {gib(kept)} already downloaded is kept: press Pull to continue."
+                    ) from exc
+                wait = min(2 ** attempts, 30)
+                log(f"connection problem ({exc}); retrying in {wait}s and continuing from {gib(kept)} (try {attempts} of 6)")
+                self.save_state(image_id, detail=f"connection problem, retrying in {wait}s (kept {gib(kept)})")
+                deadline = time.time() + wait
+                while time.time() < deadline:
                     if cancel is not None and cancel.is_set():
                         raise CatalogError("cancelled")
-                    block = response.read(1 << 20)
-                    if not block:
-                        break
-                    out.write(block)
-                    if digest is not None:
-                        digest.update(block)
-                    done += len(block)
-                    pct = int(done * 100 / total) if total else 0
-                    if pct != last:
-                        last = pct
-                        self.save_state(image_id, progress=pct, detail=f"downloading {done // (1024 * 1024)} MiB")
-                        log(f"downloaded {pct}% ({done // (1024 * 1024)} MiB)")
-        except (urllib.error.URLError, OSError) as exc:
-            part.unlink(missing_ok=True)
-            raise CatalogError(f"download failed: {exc}") from exc
-        if checksum and digest is not None:
-            actual = digest.hexdigest()
+                    time.sleep(0.5)
+        if checksum:
+            self.save_state(image_id, progress=100, detail=f"verifying {label}")
+            log(f"verifying {label} of {gib(part.stat().st_size)}")
+            actual = hash_file(part, checksum[0])
             if actual != checksum[1]:
                 part.unlink(missing_ok=True)
                 raise CatalogError(
@@ -639,6 +674,65 @@ class Catalog:
         elif str(target.name).lower().endswith(ARCHIVE_SUFFIXES):
             log("no checksum given for this image: the download was NOT verified")
         part.replace(target)
+
+    def _fetch(self, url: str, part: Path, image_id: str, log, cancel) -> None:
+        """One HTTP request, continuing a partly downloaded file when the server allows it."""
+        start = part.stat().st_size if part.exists() else 0
+        headers = {"User-Agent": "rampart-range/1.1"}
+        if start:
+            headers["Range"] = f"bytes={start}-"
+        request = urllib.request.Request(url, headers=headers)
+        try:
+            response = urllib.request.urlopen(request, timeout=60)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 416 and start:  # what we hold does not fit the file on the server any more
+                part.unlink(missing_ok=True)
+                raise OSError("the partial file did not match the server; starting again") from exc
+            raise
+        with response:
+            length = int(response.headers.get("Content-Length") or 0)
+            if start and response.status == 206:
+                mode, done = "ab", start
+                total = start + length if length else 0
+                log(f"resuming at {gib(start)}")
+            else:
+                mode, done = "wb", 0  # no resume support (or a fresh download)
+                total = length
+            self._check_space(part, total, url)
+            began, began_done, last_note = time.time(), done, 0.0
+            with part.open(mode) as out:
+                while True:
+                    if cancel is not None and cancel.is_set():
+                        raise CatalogError("cancelled")
+                    block = response.read(1 << 20)
+                    if not block:
+                        break
+                    out.write(block)
+                    done += len(block)
+                    now = time.time()
+                    if now - last_note >= 1.0:
+                        last_note = now
+                        rate = (done - began_done) / max(now - began, 0.001)
+                        left = f" · about {_eta((total - done) / rate)} left" if total and rate > 0 else ""
+                        size = f"{gib(done)} of {gib(total)}" if total else gib(done)
+                        pct = int(done * 100 / total) if total else 0
+                        self.save_state(image_id, progress=min(pct, 99), detail=f"downloading {size} · {gib(rate)}/s{left}")
+            if total and done < total:
+                raise OSError(f"the connection closed early ({gib(done)} of {gib(total)})")
+        log(f"downloaded {gib(done)}")
+
+    def _check_space(self, part: Path, total: int, url: str) -> None:
+        """Say so before a 40 GB download fails halfway on a full disk."""
+        if not total:
+            return
+        archive = url.lower().split("?")[0].endswith(ARCHIVE_SUFFIXES)
+        needed = int(total * (2.3 if archive else 1.3))
+        free = shutil.disk_usage(part.parent).free + (part.stat().st_size if part.exists() else 0)
+        if free < needed:
+            raise CatalogError(
+                f"not enough free disk space: this image needs about {gib(needed)} (download, unpacked copy and converted disk) "
+                f"and only {gib(free)} is free in {part.parent}. Free some space or use --data to keep images on another drive."
+            )
 
     def _convert_to_qcow2(self, disk: Path, dest: Path, log, image_id: str = "") -> Path:
         qemu_img = shutil.which("qemu-img")

@@ -227,6 +227,18 @@ emulators handle small Linux images; a multi-GB Windows 11 or Mint image would
 be unusably slow and would have to be downloaded into the page. Streaming the
 real VM from QEMU is the practical way to get "the VM in the browser".
 
+## Setup check, resume and delete
+
+* **Setup check:** once connected, the page lists what the agent found on this computer (Python, QEMU,
+  `unzip`/7-Zip, ssh, hardware acceleration, free disk space) with the exact command that fixes each gap.
+  `GET /api/capabilities` returns the same list as `checks`.
+* **Downloads resume.** The agent asks the server for the rest of a partly downloaded file (HTTP `Range`)
+  and retries up to six times with a growing pause; a server without range support just starts again.
+  The card shows speed and time left. Before a big download it checks free disk space and says so up front
+  instead of failing at 90%.
+* **Delete an image** to free its disk space (a practice image is 20-40 GB while prepared): the **Delete**
+  button, or `DELETE /api/images/{id}`. Refused while it is downloading or a VM from it is running.
+
 ## Big images: what "Pulling" means
 
 A real practice image is many gigabytes and goes through three slow steps. The card shows
@@ -354,7 +366,7 @@ curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8787/api/images | jq 
 python3 -m unittest discover -s tests/range -v
 ```
 
-Nineteen checks, standard library only (the QEMU one is skipped without QEMU): adding an image from a **password-protected
+Twenty-six checks, standard library only (the QEMU one is skipped without QEMU): adding an image from a **password-protected
 ZIP** served over HTTP (right password → ready, wrong password → `wrong unzip
 password`, no password → `password protected`), that the password never reaches
 `images.local.json`, that a reset replaces the booted VM and deletes its overlay

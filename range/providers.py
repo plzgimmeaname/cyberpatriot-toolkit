@@ -20,6 +20,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -134,6 +135,63 @@ def capabilities() -> dict:
         "scp": shutil.which("scp") is not None,
         "powershell": _powershell(),
     }
+
+
+def setup_checks(data_dir: Path) -> list[dict]:
+    """What this computer has and lacks, with the command that fixes each gap. Shown on the page."""
+    system = platform.system()
+    machine = platform.machine().lower()
+    arm = machine in {"arm64", "aarch64"}
+
+    def fix(mac: str, debian: str, windows: str = "") -> str:
+        return {"Darwin": mac, "Linux": debian, "Windows": windows or "Install it from its website"}.get(system, debian)
+
+    out: list[dict] = []
+    py_ok = sys.version_info >= (3, 9)
+    out.append({"id": "python", "label": "Python 3.9 or newer", "status": "ok" if py_ok else "missing",
+                "detail": platform.python_version(), "fix": "" if py_ok else "Install Python 3.9+ from python.org"})
+
+    hyperv = os.name == "nt" and _powershell() is not None
+    qemu = shutil.which("qemu-system-x86_64") is not None
+    qimg = shutil.which("qemu-img") is not None
+    if qemu and qimg:
+        out.append({"id": "qemu", "label": "QEMU (boots the images)", "status": "ok", "detail": "found", "fix": ""})
+    elif hyperv:
+        out.append({"id": "qemu", "label": "QEMU or Hyper-V (boots the images)", "status": "ok", "detail": "Hyper-V is available; QEMU is optional here (it adds the in-page desktop)", "fix": ""})
+    else:
+        out.append({"id": "qemu", "label": "QEMU (boots the images)", "status": "missing",
+                    "detail": "qemu-system-x86_64 and qemu-img were not found",
+                    "fix": fix("brew install qemu", "sudo apt install qemu-system-x86 qemu-utils", "Install QEMU from qemu.org, or enable the Hyper-V role")})
+
+    unpackers = [t for t in ("unzip", "7zz", "7z", "7za", "unar") if shutil.which(t)]
+    out.append({"id": "unzip", "label": "unzip or 7-Zip (fast unpacking of password-protected archives)",
+                "status": "ok" if unpackers else "warn",
+                "detail": ", ".join(unpackers) if unpackers else "not found: unpacking falls back to Python, about 40 times slower",
+                "fix": "" if unpackers else fix("brew install sevenzip", "sudo apt install unzip", "Install 7-Zip from 7-zip.org")})
+
+    ssh = shutil.which("ssh") is not None and shutil.which("scp") is not None
+    out.append({"id": "ssh", "label": "ssh and scp (to run the script inside Linux/FreeBSD VMs)",
+                "status": "ok" if ssh else "warn", "detail": "found" if ssh else "not found: you can still use the desktop, but not Run audit",
+                "fix": "" if ssh else fix("ssh ships with macOS", "sudo apt install openssh-client", "Settings > Apps > Optional features > OpenSSH Client")})
+
+    if system == "Darwin" and arm:
+        out.append({"id": "speed", "label": "Speed", "status": "warn",
+                    "detail": "Apple Silicon emulates the x86 images: fine for trying the page, slow for Windows. An Intel/AMD computer with virtualization is much faster.", "fix": ""})
+    elif system == "Linux":
+        kvm = Path("/dev/kvm").exists()
+        out.append({"id": "speed", "label": "Hardware acceleration (KVM)", "status": "ok" if kvm else "warn",
+                    "detail": "available" if kvm else "/dev/kvm is missing: VMs are emulated and slow",
+                    "fix": "" if kvm else "Enable virtualization in the BIOS and install: sudo apt install qemu-kvm"})
+
+    try:
+        free = shutil.disk_usage(data_dir).free
+        gib_free = free / (1 << 30)
+        out.append({"id": "disk", "label": "Free disk space for images", "status": "ok" if gib_free >= 30 else "warn",
+                    "detail": f"{gib_free:.0f} GiB free in {data_dir}",
+                    "fix": "" if gib_free >= 30 else "A practice image needs 20-40 GB while it is prepared. Free space, or start the agent with --data on another drive"})
+    except OSError:
+        pass
+    return out
 
 
 class Provider:

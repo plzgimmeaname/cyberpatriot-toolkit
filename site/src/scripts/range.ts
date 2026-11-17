@@ -219,7 +219,7 @@ function renderImages(): void {
   if (!host) return;
   host.replaceChildren();
   if (state.images.length === 0) {
-    host.append(el('p', 'cp-hint', 'The catalog is empty. Add an image to range/images.json and restart the agent.'));
+    host.append(el('p', 'cp-hint', 'No images yet. Paste a download link above and press Download & boot.'));
     return;
   }
   for (const image of state.images) {
@@ -233,7 +233,7 @@ function renderImages(): void {
 
     if (image.notes) card.append(el('p', 'rg-image__notes', image.notes));
     if (image.detail) card.append(el('p', 'cp-hint', image.detail));
-    if (image.state === 'pulling' && image.progress > 0) {
+    if (image.state === 'pulling') {
       const bar = el('div', 'cp-bar rg-bar');
       const fill = el('span', 'cp-bar__fill');
       fill.style.width = `${image.progress}%`;
@@ -249,23 +249,24 @@ function renderImages(): void {
     pull.disabled = image.state === 'pulling';
     actions.append(pull);
 
+    const ready = image.state === 'ready';
     const live = state.sessions.find((sess) => sess.imageId === image.id && (sess.state === 'running' || sess.state === 'booting'));
     const boot = el('button', 'cp-btn cp-btn--sm', live ? 'Booted' : 'Boot');
     boot.type = 'button';
     boot.dataset.action = 'boot';
     boot.dataset.image = image.id;
     boot.disabled = image.state !== 'ready' || Boolean(live);
-    actions.append(boot);
+    if (ready) actions.append(boot);
 
-    const desk = el('button', 'cp-btn cp-btn--sm', 'Boot desktop only');
+    const desk = el('button', 'cp-btn cp-btn--sm', 'Desktop only');
     desk.type = 'button';
     desk.dataset.action = 'boot-desktop';
     desk.dataset.image = image.id;
     desk.title = 'Boot without waiting for SSH/WinRM: for stock images. You use the machine in the browser.';
     desk.disabled = image.state !== 'ready' || Boolean(live);
-    actions.append(desk);
+    if (ready) actions.append(desk);
 
-    for (const mode of ['audit', 'apply'] as const) {
+    for (const mode of ready ? (['audit', 'apply'] as const) : []) {
       const btn = el('button', `cp-btn cp-btn--sm${mode === 'audit' ? ' cp-btn--primary' : ''}`, mode === 'audit' ? 'Run audit' : 'Run apply');
       btn.type = 'button';
       btn.dataset.action = 'run';
@@ -274,8 +275,28 @@ function renderImages(): void {
       btn.disabled = image.state !== 'ready';
       actions.append(btn);
     }
+    const remove = el('button', 'cp-btn cp-btn--sm cp-btn--ghost', 'Delete');
+    remove.type = 'button';
+    remove.dataset.action = 'delete-image';
+    remove.dataset.image = image.id;
+    remove.title = 'Delete the downloaded files to free disk space';
+    remove.disabled = image.state === 'pulling' || Boolean(live);
+    actions.append(remove);
     card.append(actions);
     host.append(card);
+  }
+}
+
+async function deleteImage(id: string): Promise<void> {
+  const image = state.images.find((entry) => entry.id === id);
+  if (!window.confirm(`Delete "${image?.name ?? id}" and its downloaded files? This frees the disk space; you can add it again from the link.`)) return;
+  try {
+    const result = await api<{ freedBytes: number }>(`/api/images/${id}`, { method: 'DELETE' });
+    const gb = result.freedBytes / (1 << 30);
+    message(`Deleted ${image?.name ?? id}${result.freedBytes ? `, freed ${gb >= 1 ? gb.toFixed(1) + ' GiB' : Math.round(result.freedBytes / (1 << 20)) + ' MiB'}` : ''}.`, 'ok');
+    await refreshImages();
+  } catch (error) {
+    message(error instanceof Error ? error.message : String(error), 'error');
   }
 }
 
@@ -514,6 +535,8 @@ async function connect(): Promise<void> {
     const setup = byId<HTMLElement>('range-setup');
     if (setup) setup.hidden = true;
     message('');
+    showConnected(health.version);
+    void loadSetupCheck();
     await Promise.all([refreshImages(), refreshRuns(), refreshSessions()]);
   } catch (error) {
     state.connected = false;
@@ -521,10 +544,105 @@ async function connect(): Promise<void> {
       status.textContent = 'Not connected';
       status.dataset.state = 'error';
     }
+    const reason = error instanceof Error ? error.message : String(error);
     message(
-      `${error instanceof Error ? error.message : String(error)} — is range/agent.py running? Check the address and token.`,
+      error instanceof TypeError
+        ? `Could not reach the agent at ${state.url}. Is it running? Start it with the launcher from "Get the agent" (or python3 rampart-range.pyz), then press Connect again.`
+        : `${reason}. Check the address and the token the agent printed.`,
       'error',
     );
+  }
+}
+
+/** Connected: collapse the how-to into a slim status bar, so the add-image form is the first thing on the page. */
+function showConnected(version: string): void {
+  const intro = byId<HTMLElement>('range-intro');
+  const bar = byId<HTMLElement>('range-bar');
+  const status = byId<HTMLElement>('range-bar-status');
+  if (intro) intro.hidden = true;
+  if (bar) bar.hidden = false;
+  if (status) status.lastChild!.textContent = ` Connected · agent ${version} · ${new URL(state.url).host}`;
+  byId('range-help-btn')?.setAttribute('aria-expanded', 'false');
+}
+
+function showDisconnected(): void {
+  state.connected = false;
+  state.token = '';
+  try {
+    sessionStorage.removeItem(TOKEN_KEY);
+  } catch {
+    /* private window */
+  }
+  disconnectDesktop();
+  window.clearTimeout(state.sessionTimer);
+  window.clearTimeout(state.imageTimer);
+  const intro = byId<HTMLElement>('range-intro');
+  const bar = byId<HTMLElement>('range-bar');
+  const live = byId<HTMLElement>('range-live');
+  const status = byId<HTMLElement>('range-status');
+  if (intro) intro.hidden = false;
+  if (bar) bar.hidden = true;
+  if (live) live.hidden = true;
+  if (status) {
+    status.textContent = 'Not connected';
+    status.dataset.state = 'off';
+  }
+  const token = byId<HTMLInputElement>('range-token');
+  if (token) token.value = '';
+}
+
+interface SetupCheck {
+  id: string;
+  label: string;
+  status: 'ok' | 'warn' | 'missing';
+  detail: string;
+  fix: string;
+}
+
+/** What the agent found on this computer, with the command that fixes each gap. */
+async function loadSetupCheck(): Promise<void> {
+  const box = byId<HTMLDetailsElement>('range-check');
+  const list = byId<HTMLUListElement>('range-check-list');
+  const summary = byId<HTMLElement>('range-check-summary');
+  if (!box || !list || !summary) return;
+  try {
+    const data = await api<{ checks?: SetupCheck[] }>('/api/capabilities');
+    const checks = data.checks ?? [];
+    if (checks.length === 0) return;
+    list.replaceChildren();
+    for (const check of checks) {
+      const item = el('li');
+      item.dataset.status = check.status;
+      item.append(el('span', 'rg__mark', check.status === 'ok' ? '✓' : check.status === 'warn' ? '!' : '✕'));
+      item.append(el('strong', '', check.label));
+      if (check.detail) item.append(el('p', 'rg__detail', check.detail));
+      if (check.fix) {
+        const fix = el('div', 'rg__fix');
+        fix.append(el('code', '', check.fix));
+        const copy = el('button', 'cp-btn cp-btn--sm', 'Copy');
+        copy.type = 'button';
+        copy.addEventListener('click', () => {
+          void navigator.clipboard?.writeText(check.fix).then(() => {
+            copy.textContent = 'Copied';
+            window.setTimeout(() => (copy.textContent = 'Copy'), 1500);
+          });
+        });
+        fix.append(copy);
+        item.append(fix);
+      }
+      list.append(item);
+    }
+    const missing = checks.filter((c) => c.status === 'missing').length;
+    const warn = checks.filter((c) => c.status === 'warn').length;
+    summary.textContent = missing
+      ? `Setup check: ${missing} thing${missing > 1 ? 's' : ''} to install before this will work`
+      : warn
+        ? `Setup check: ready, with ${warn} note${warn > 1 ? 's' : ''}`
+        : 'Setup check: everything is installed';
+    box.hidden = false;
+    box.open = missing > 0; // only force it open when something blocks you
+  } catch {
+    /* an older agent has no checks */
   }
 }
 
@@ -642,7 +760,7 @@ function renderSessions(): void {
       card.append(el('p', 'rg-muted', `${session.provider ?? 'vm'} · ${session.host}:${session.port}${session.canRun ? ' · ready for a run' : ''}`));
     }
     const actions = el('div', 'rg-actions');
-    const consoleBtn = el('button', 'cp-btn cp-btn--sm', 'Console');
+    const consoleBtn = el('button', `cp-btn cp-btn--sm${session.desktopAvailable ? ' cp-btn--primary' : ''}`, session.desktopAvailable ? 'Open desktop' : 'Open console');
     consoleBtn.type = 'button';
     consoleBtn.dataset.action = 'console';
     consoleBtn.dataset.session = session.id;
@@ -966,6 +1084,13 @@ function wire(): void {
 
   byId<HTMLButtonElement>('range-connect-btn')?.addEventListener('click', () => void connect());
   byId<HTMLButtonElement>('add-btn')?.addEventListener('click', () => void addImage());
+  byId<HTMLButtonElement>('range-disconnect-btn')?.addEventListener('click', showDisconnected);
+  byId<HTMLButtonElement>('range-help-btn')?.addEventListener('click', (event) => {
+    const intro = byId<HTMLElement>('range-intro');
+    if (!intro) return;
+    intro.hidden = !intro.hidden;
+    (event.currentTarget as HTMLElement).setAttribute('aria-expanded', String(!intro.hidden));
+  });
   byId<HTMLButtonElement>('range-refresh-btn')?.addEventListener('click', () => {
     void refreshImages();
     void refreshRuns();
@@ -1012,6 +1137,7 @@ function wire(): void {
     const action = button.dataset.action;
     if (action === 'pull' && button.dataset.image) void pullImage(button.dataset.image);
     if (action === 'boot' && button.dataset.image) void bootImage(button.dataset.image);
+    if (action === 'delete-image' && button.dataset.image) void deleteImage(button.dataset.image);
     if (action === 'boot-desktop' && button.dataset.image) void bootImage(button.dataset.image, true);
     if (action === 'console' && button.dataset.session) void selectSession(button.dataset.session);
     if (action === 'stop-session' && button.dataset.session) void stopSession(button.dataset.session);
