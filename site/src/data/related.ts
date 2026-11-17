@@ -44,6 +44,11 @@ export const RELATED: Record<string, RelatedTool[]> = {
   'guides/forensics-questions': [T.forensics, commands('linux'), T.gotchas],
   'guides/glossary': [T.glossaryQuiz],
   'guides/cisco-networking': [T.netQuiz, commands('cisco')],
+  'cisco/index': [T.netQuiz, commands('cisco')],
+  'cisco/level-1-basics': [T.netQuiz, commands('cisco')],
+  'cisco/level-2-addressing': [T.netQuiz, commands('cisco')],
+  'cisco/level-3-switching': [T.netQuiz, commands('cisco')],
+  'cisco/level-4-state': [T.netQuiz, commands('cisco'), T.fieldCards],
   'guides/linux-service-hardening': [T.builder, commands('linux'), T.pointsMap],
 };
 

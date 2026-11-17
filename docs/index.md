@@ -23,11 +23,21 @@ Step-by-step checklists, beginner guides and hardening scripts for practicing **
 
 The Cisco networking challenge is worth **30 points** in Round 1, **30** in Round 2, **100** in the State round and **240** in the Semifinals, plus **80** for the web-based challenge in the Semifinals. Totals: Round 1 **230**, Round 2 **330**, State **400**, Semifinals **620** (Platinum; 480 Gold, 300 Silver).
 
+## Cisco networking, basics → State
+
+A ladder of four levels, each with the commands, three things to build, and a self-check. Start at Level 1 even if you have done a round: that is where the CLI habits come from.
+
+- [Overview and level ladder](cisco/index.md): what the Cisco part is, how it is scored, how to practise
+- **Level 1 — Basics**: cables, IOS modes, a device that stays configured ([page](cisco/level-1-basics.md))
+- **Level 2 — Addressing and routing**: subnetting, addressing tables, static routes, DHCP ([page](cisco/level-2-addressing.md))
+- **Level 3 — Switching and services**: VLANs, trunks, router-on-a-stick, port security, SSH ([page](cisco/level-3-switching.md))
+- **Level 4 — State round**: ACLs, NAT, OSPF, the State workflow and a troubleshooting table ([page](cisco/level-4-state.md))
+- [Cisco networking and Packet Tracer reference](guides/cisco-networking.md): the long-form theory, OSI layers, ports and the full IOS cheat sheet
+
 ## Guides
 
 - [Forensics questions](guides/forensics-questions.md): hashes, decoding, finding files, reading logs
 - [Linux critical service hardening](guides/linux-service-hardening.md): Apache, Nginx, PHP, MySQL, FTP, Samba, DNS, Postfix
-- [Cisco networking and Packet Tracer](guides/cisco-networking.md): IOS commands, subnetting, ports
 - [Glossary](guides/glossary.md): every acronym explained
 - [For mentors and teachers](guides/for-mentors-and-teachers.md): running practice sessions with this toolkit
 

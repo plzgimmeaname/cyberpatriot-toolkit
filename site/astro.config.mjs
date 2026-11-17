@@ -123,6 +123,17 @@ export default defineConfig({
           ],
         },
         {
+          label: 'Cisco, basics → State',
+          items: [
+            { label: 'Overview and level ladder', link: '/cisco/' },
+            { label: 'Level 1 · Basics', link: '/cisco/level-1-basics/', badge: { text: 'L1', variant: 'note' } },
+            { label: 'Level 2 · Addressing and routing', link: '/cisco/level-2-addressing/', badge: { text: 'L2', variant: 'note' } },
+            { label: 'Level 3 · Switching and services', link: '/cisco/level-3-switching/', badge: { text: 'L3', variant: 'note' } },
+            { label: 'Level 4 · State round', link: '/cisco/level-4-state/', badge: { text: 'L4', variant: 'caution' } },
+            { label: 'Cisco & Packet Tracer reference', link: '/guides/cisco-networking/' },
+          ],
+        },
+        {
           label: 'Reference',
           items: [
             { label: 'Points map', link: '/points-map/' },
@@ -130,7 +141,6 @@ export default defineConfig({
             { label: 'What the scripts do', link: '/automation/' },
             { label: 'Forensics questions', link: '/guides/forensics-questions/' },
             { label: 'Linux service hardening', link: '/guides/linux-service-hardening/' },
-            { label: 'Cisco & Packet Tracer', link: '/guides/cisco-networking/' },
           ],
         },
         {

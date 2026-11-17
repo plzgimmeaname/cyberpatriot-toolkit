@@ -51,7 +51,7 @@ Source: [CyberPatriot 19 challenges and scoring values](https://www.uscyberpatri
 
 - Each team gets **one 4-hour block**. The clock starts when the first image is powered on.
 - Up to 5 people work at once. Usually each person takes one image or one task.
-- There is also a **Cisco networking** part (a quiz and a Packet Tracer activity). Study it with the [Cisco & Packet Tracer guide](../guides/cisco-networking.md) and the [Networking quiz](/tools/networking-quiz/).
+- There is also a **Cisco networking** part (a quiz and a Packet Tracer activity). Work up the [Cisco levels, basics → State](../cisco/index.md), with the [Cisco & Packet Tracer guide](../guides/cisco-networking.md) for theory and the [Networking quiz](/tools/networking-quiz/) for practice.
 
 ## Where to go next
 

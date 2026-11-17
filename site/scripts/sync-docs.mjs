@@ -23,7 +23,7 @@ const DOCS = join(ROOT, 'docs');
 const OUT_DOCS = join(SITE, 'src/content/docs');
 const OUT_DATA = join(SITE, 'src/data/generated');
 const OUT_DOWNLOADS = join(SITE, 'public/files');
-const SYNCED_DIRS = ['start-here', 'checklists', 'guides'];
+const SYNCED_DIRS = ['start-here', 'checklists', 'guides', 'cisco'];
 // GitHub Pages serves a project site from /<repository>/: site-absolute links need that prefix.
 const BASE = (config.base || '').replace(/\/$/, '');
 

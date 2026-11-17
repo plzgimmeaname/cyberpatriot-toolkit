@@ -2,6 +2,9 @@
 
 Most CyberPatriot rounds have a Cisco Networking Challenge next to the operating system images. It has two parts: a multiple-choice quiz on networking theory and a hands-on activity in Cisco Packet Tracer, where you set up routers, switches and PCs in a simulator. This page covers the basics you need for both, plus a cheat sheet of the Cisco commands that come up again and again.
 
+> [!TIP]
+> This is the reference, not a course. If you are learning, start with the [Cisco levels: basics → State](../cisco/index.md) — four pages that take you from cables and IOS modes to ACLs, NAT and OSPF, with something to build at each level. Come back here for the full explanation of a topic.
+
 ## What the Cisco part of a round is
 
 | Part | What you do | What helps most |
