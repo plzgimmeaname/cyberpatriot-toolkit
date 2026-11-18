@@ -1,6 +1,7 @@
 // Practice range page: talks to the local Rampart Range agent (range/agent.py).
 // Everything here is browser-only. The token is kept in sessionStorage: it is
 // never sent to the website's own server, and it disappears when the tab closes.
+import { initExtras } from './range-extras';
 
 interface RangeImage {
   id: string;
@@ -504,6 +505,7 @@ async function refreshRuns(): Promise<void> {
   const data = await api<{ runs: RangeRun[] }>('/api/runs');
   state.runs = data.runs;
   renderRuns();
+  extras.onRunsChanged();
   if (state.selected) {
     const current = state.runs.find((r) => r.id === state.selected);
     if (current) renderDetailHeader(current);
@@ -713,6 +715,7 @@ async function refreshSessions(): Promise<void> {
   const data = await api<{ sessions: RangeSession[] }>('/api/sessions');
   state.sessions = data.sessions;
   renderSessions();
+  extras.onSessionsChanged();
   renderImages();
   const firstLook = !state.sessionsPrimed;
   state.sessionsPrimed = true;
@@ -937,6 +940,7 @@ async function selectSession(id: string): Promise<void> {
     void refreshScreen(id);
     state.screenTimer = window.setInterval(() => void refreshScreen(id), 2000);
   }
+  extras.onSessionSelected();
   await pollSession(id);
   view?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
@@ -1062,7 +1066,17 @@ async function addImage(): Promise<void> {
   }
 }
 
+const extras = initExtras({
+  api,
+  message,
+  sessions: () => state.sessions,
+  runs: () => state.runs,
+  current: () => state.session,
+  selectSession: (id) => selectSession(id),
+});
+
 function wire(): void {
+  extras.init();
   const storedUrl = stored(URL_KEY, localStorage);
   const storedToken = stored(TOKEN_KEY, sessionStorage);
   state.url = storedUrl || DEFAULT_URL;

@@ -227,6 +227,31 @@ emulators handle small Linux images; a multi-GB Windows 11 or Mint image would
 be unusably slow and would have to be downloaded into the page. Streaming the
 real VM from QEMU is the practical way to get "the VM in the browser".
 
+## Practice tools on the VM page
+
+Open a booted VM and the page gives you, below its desktop:
+
+* **Snapshots** (QEMU): save the VM's exact state, restore it with one click, delete old ones. **Run apply**
+  on a booted VM saves a `before-apply-HHMMSS` snapshot first, so a script that breaks something is one
+  click from undone. Snapshots live inside the VM's overlay disk, so **Reset to original** discards them.
+  API: `GET/POST /api/sessions/{id}/snapshots`, `POST .../snapshots/{name}/restore`, `DELETE .../snapshots/{name}`.
+* **Score tracker:** type the score from the Scoring Report after each change, with what you just changed.
+  It draws the graph and, when the score drops, points at the change that caused it. Kept per image in
+  this browser.
+* **Round timer:** a 1/2/4-hour countdown that names the current game-plan phase (the same phases as
+  the Round timer tool). Per image, survives a reload.
+* **VM tabs:** with two or more VMs running, switch between them from a tab strip above the desktop
+  (each reserves its own RAM: 4 GB by default).
+
+Elsewhere on the page:
+
+* **Paste the README** (in *README answers*) to fill the admins, users and critical-services lists. It
+  uses the same parser as the README config builder. The lists are remembered in the browser.
+* **Compare two runs:** pick an Audit and a later Apply to see findings that disappeared, new ones, status
+  changes and every line added to or removed from the app, file, port and process logs.
+* **Share setup / Load setup:** save the link, checksum, OS and README answers as a small file for a
+  teammate (never the unzip password), or load one they sent you.
+
 ## Setup check, resume and delete
 
 * **Setup check:** once connected, the page lists what the agent found on this computer (Python, QEMU,
@@ -366,7 +391,7 @@ curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8787/api/images | jq 
 python3 -m unittest discover -s tests/range -v
 ```
 
-Twenty-six checks, standard library only (the QEMU one is skipped without QEMU): adding an image from a **password-protected
+Twenty-seven checks, standard library only (the QEMU one is skipped without QEMU): adding an image from a **password-protected
 ZIP** served over HTTP (right password → ready, wrong password → `wrong unzip
 password`, no password → `password protected`), that the password never reaches
 `images.local.json`, that a reset replaces the booted VM and deletes its overlay

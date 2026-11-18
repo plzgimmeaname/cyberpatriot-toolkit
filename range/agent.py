@@ -494,6 +494,45 @@ class Range:
         self.screen_cache[str(frame)] = (stamp, png)
         return png
 
+    def _qemu_runtime(self, sid: str) -> dict:
+        with self.lock:
+            session = self.sessions.get(sid)
+            runtime = dict(session["runtime"]) if session and session.get("runtime") else None
+        if session is None:
+            raise KeyError(sid)
+        if session.get("provider") != "qemu" or runtime is None or session["state"] != "running":
+            raise ValueError("snapshots need a running VM that was booted with QEMU")
+        return runtime
+
+    def snapshots(self, sid: str) -> dict:
+        try:
+            return {"snapshots": providers.qemu_snapshots(self._qemu_runtime(sid))}
+        except providers.ProviderError as exc:
+            raise ValueError(str(exc)) from exc
+
+    def snapshot_save(self, sid: str, name: str) -> dict:
+        try:
+            providers.qemu_snapshot_save(self._qemu_runtime(sid), name)
+        except (providers.ProviderError, OSError) as exc:
+            raise ValueError(str(exc)) from exc
+        self._session_log(sid, f"snapshot saved: {name}")
+        return self.snapshots(sid)
+
+    def snapshot_restore(self, sid: str, name: str) -> dict:
+        try:
+            providers.qemu_snapshot_restore(self._qemu_runtime(sid), name)
+        except (providers.ProviderError, OSError) as exc:
+            raise ValueError(str(exc)) from exc
+        self._session_log(sid, f"went back to snapshot: {name}")
+        return {"restored": name}
+
+    def snapshot_delete(self, sid: str, name: str) -> dict:
+        try:
+            providers.qemu_snapshot_delete(self._qemu_runtime(sid), name)
+        except (providers.ProviderError, OSError) as exc:
+            raise ValueError(str(exc)) from exc
+        return self.snapshots(sid)
+
     def session_console(self, sid: str, offset: int) -> dict:
         with self.lock:
             session = self.sessions.get(sid)
@@ -568,6 +607,15 @@ class Range:
             self.cancels[rid] = threading.Event()
             self.active = rid
         self._save()
+        if mode == "apply" and session_id:
+            # Undo button for a practice round: a snapshot right before the script changes anything.
+            try:
+                name = "before-apply-" + datetime.now().strftime("%H%M%S")
+                providers.qemu_snapshot_save(self._qemu_runtime(session_id), name)
+                record["snapshot"] = name
+                self._session_log(session_id, f"snapshot saved before Apply: {name}")
+            except Exception as exc:  # not fatal: Apply still runs
+                self._session_log(session_id, f"no snapshot before Apply ({exc})")
         self.submit(self._execute, rid, image, record, config, mode, session_id)
         return {"id": rid}
 
@@ -902,6 +950,10 @@ class Handler(BaseHTTPRequestHandler):
                 if m:
                     self._send(200, rng.session_screen(m.group(1)), "image/png")
                     return
+                m = re.match(r"^/api/sessions/([A-Za-z0-9_.-]+)/snapshots$", path)
+                if m:
+                    self._send(200, rng.snapshots(m.group(1)))
+                    return
                 m = re.match(r"^/api/sessions/([A-Za-z0-9_.-]+)/desktop$", path)
                 if m:
                     self._send(200, rng.session_desktop(m.group(1)))
@@ -974,6 +1026,14 @@ class Handler(BaseHTTPRequestHandler):
             if m:
                 self._send(202, rng.boot_image(m.group(1), bool(self._body().get("desktopOnly"))))
                 return
+            m = re.match(r"^/api/sessions/([A-Za-z0-9_.-]+)/snapshots$", path)
+            if m:
+                self._send(200, rng.snapshot_save(m.group(1), str(self._body().get("name") or "")))
+                return
+            m = re.match(r"^/api/sessions/([A-Za-z0-9_.-]+)/snapshots/([A-Za-z0-9._-]+)/restore$", path)
+            if m:
+                self._send(200, rng.snapshot_restore(m.group(1), m.group(2)))
+                return
             m = re.match(r"^/api/sessions/([A-Za-z0-9_.-]+)/reset$", path)
             if m:
                 self._send(202, rng.reset_session(m.group(1)))
@@ -1005,6 +1065,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._error(404, "no such image")
             except RuntimeError as exc:
                 self._error(409, str(exc))
+            return
+        snap = re.match(r"^/api/sessions/([A-Za-z0-9_.-]+)/snapshots/([A-Za-z0-9._-]+)$", path)
+        if snap:
+            try:
+                self._send(200, self.range.snapshot_delete(snap.group(1), snap.group(2)))
+            except KeyError:
+                self._error(404, "no such VM")
+            except ValueError as exc:
+                self._error(400, str(exc))
             return
         m = re.match(r"^/api/runs/([A-Za-z0-9_.-]+)$", path)
         if not m:

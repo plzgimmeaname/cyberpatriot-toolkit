@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import re
 import secrets
 import shutil
 import signal
@@ -61,18 +62,91 @@ def qemu_screendump(runtime: dict, log=None) -> Path | None:
     return screen if screen.exists() else None
 
 
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
 def qemu_monitor(monitor: str, command: str, timeout: float = 5.0) -> str:
-    """Send one command to a QEMU human-monitor socket and return its reply."""
+    """Send one command to a QEMU human-monitor socket and return its output.
+
+    Waits for QEMU's own `(qemu)` prompt instead of sleeping, so a slow command (saving a
+    snapshot of a VM with gigabytes of RAM) is waited for, and a quick one returns at once.
+    """
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
         sock.settimeout(timeout)
         sock.connect(monitor)
-        sock.recv(65536)  # banner
+
+        def read_to_prompt() -> str:
+            data = b""
+            deadline = time.time() + timeout
+            while not data.rstrip().endswith(b"(qemu)"):
+                if time.time() > deadline:
+                    raise OSError(f"QEMU did not answer within {int(timeout)}s")
+                try:
+                    chunk = sock.recv(65536)
+                except socket.timeout:
+                    continue
+                if not chunk:
+                    break
+                data += chunk
+            return data.decode("utf-8", "replace")
+
+        read_to_prompt()  # banner
         sock.sendall(command.encode() + b"\n")
-        time.sleep(0.3)
-        try:
-            return sock.recv(65536).decode("utf-8", "replace")
-        except OSError:
-            return ""
+        text = _ANSI.sub("", read_to_prompt()).replace("\r", "")
+        lines = [line for line in text.split("\n") if line.strip() and line.strip() != "(qemu)"]
+        if lines and command.startswith(lines[0].strip()[:8]):  # the terminal echoes what we typed
+            lines = lines[1:]
+        return "\n".join(line.replace("(qemu)", "").rstrip() for line in lines).strip()
+
+
+SNAPSHOT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$")
+
+
+def _snapshot_monitor(runtime: dict) -> str:
+    monitor = runtime.get("monitor") or ""
+    if not monitor or not Path(monitor).exists():
+        raise ProviderError("this VM has no QEMU monitor, so it cannot be snapshotted (QEMU provider only)")
+    return monitor
+
+
+def qemu_snapshots(runtime: dict) -> list[dict]:
+    """The snapshots saved inside the VM's overlay disk."""
+    out = qemu_monitor(_snapshot_monitor(runtime), "info snapshots", timeout=20)
+    snapshots = []
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and (parts[0].isdigit() or parts[0] == "--") and parts[1] not in {"TAG"}:
+            date = next((f"{parts[i]} {parts[i + 1]}" for i in range(2, len(parts) - 1) if re.match(r"\d{4}-\d\d-\d\d$", parts[i])), "")
+            snapshots.append({"name": parts[1], "size": " ".join(parts[2:4]) if len(parts) > 3 else "", "date": date})
+    return snapshots
+
+
+def _check_name(name: str) -> str:
+    if not SNAPSHOT_NAME.match(name or ""):
+        raise ProviderError("a snapshot name uses letters, numbers, dot, dash and underscore (up to 40 characters)")
+    return name
+
+
+def qemu_snapshot_save(runtime: dict, name: str) -> None:
+    monitor = _snapshot_monitor(runtime)
+    name = _check_name(name)
+    if any(snap["name"] == name for snap in qemu_snapshots(runtime)):
+        qemu_monitor(monitor, f"delvm {name}", timeout=60)  # saving under an existing name replaces it
+    out = qemu_monitor(monitor, f"savevm {name}", timeout=300)
+    if "error" in out.lower() or "cannot" in out.lower():
+        raise ProviderError(out.strip().splitlines()[-1])
+
+
+def qemu_snapshot_restore(runtime: dict, name: str) -> None:
+    out = qemu_monitor(_snapshot_monitor(runtime), f"loadvm {_check_name(name)}", timeout=300)
+    if "error" in out.lower() or "cannot" in out.lower() or "no snapshot" in out.lower():
+        raise ProviderError(out.strip().splitlines()[-1])
+
+
+def qemu_snapshot_delete(runtime: dict, name: str) -> None:
+    out = qemu_monitor(_snapshot_monitor(runtime), f"delvm {_check_name(name)}", timeout=60)
+    if "error" in out.lower() or "no snapshot" in out.lower():
+        raise ProviderError(out.strip().splitlines()[-1])
 
 
 def free_vnc_display() -> int:

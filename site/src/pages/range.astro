@@ -135,7 +135,15 @@ const setupCommands = [
       </details>
 
       <section class="rg__card" aria-labelledby="range-add-title">
-        <h2 id="range-add-title">Add an image from a link</h2>
+        <div class="rg__card-head">
+          <h2 id="range-add-title">Add an image from a link</h2>
+          <span class="rg__inline">
+            <button id="setup-export" type="button" class="cp-btn cp-btn--sm cp-btn--ghost" title="Save the link, checksum and README answers as a file for a teammate">Share setup</button>
+            <label class="cp-btn cp-btn--sm cp-btn--ghost rg__file" title="Load a setup file a teammate sent you">Load setup
+              <input id="setup-import" type="file" accept="application/json,.json" />
+            </label>
+          </span>
+        </div>
         <p class="cp-hint">
           Big images take a while: the card shows each step (download, checksum, unpack, convert) with its progress, and a
           dropped connection continues where it stopped.
@@ -204,7 +212,23 @@ const setupCommands = [
           <h2 id="range-config-title">README answers <span class="cp-hint">for audits</span></h2>
           <button id="range-refresh-btn" class="cp-btn cp-btn--sm" type="button">Refresh lists</button>
         </div>
-        <p class="cp-hint">The same three lists the script would ask for. They are written into the guest's config file for every run.</p>
+        <p class="cp-hint">The same three lists the script would ask for. They are written into the guest's config file for every run, and remembered in this browser.</p>
+        <details class="rg__more">
+          <summary>Paste the README to fill these in</summary>
+          <label>
+            <span>README text</span>
+            <textarea id="cfg-paste" rows="6" placeholder="Paste the whole CyberPatriot README here" spellcheck="false"></textarea>
+          </label>
+          <div class="rg__inline">
+            <select id="cfg-paste-os" aria-label="Operating system of the README">
+              <option value="linux">Linux</option>
+              <option value="windows">Windows</option>
+              <option value="freebsd">FreeBSD</option>
+            </select>
+            <button id="cfg-paste-btn" type="button" class="cp-btn cp-btn--sm cp-btn--primary">Fill in the lists</button>
+          </div>
+          <p class="cp-hint">Always check what it found against the README: it reads headings like "Authorized Administrators" and "Critical Services".</p>
+        </details>
         <div class="rg__grid">
           <label>
             <span>Authorized admins</span>
@@ -228,6 +252,7 @@ const setupCommands = [
           <span class="cp-hint">A booted VM stays on until you stop it; Reset boots the original image again.</span>
         </div>
         <div id="session-list" class="rg__sessions"></div>
+        <div id="vm-tabs" class="rg-tabs" role="tablist" aria-label="Running VMs" hidden></div>
         <div id="session-view" hidden>
           <h3 id="session-title" class="rg__h">Console</h3>
           <p id="session-note" class="cp-hint"></p>
@@ -252,7 +277,56 @@ const setupCommands = [
             <figcaption class="cp-hint">A frame from the VM's display, refreshed every couple of seconds (QEMU only). Work inside the VM over SSH; this view is read-only.</figcaption>
           </figure>
           <pre id="session-console" class="rg__pre rg__pre--log"></pre>
+          <div class="rg__panels">
+            <section class="rg__panel" aria-labelledby="snap-title">
+              <h4 id="snap-title">Snapshots</h4>
+              <p id="snap-note" class="cp-hint"></p>
+              <div class="rg__inline">
+                <input id="snap-name" type="text" placeholder="name (optional)" maxlength="40" spellcheck="false" autocomplete="off" aria-label="Snapshot name" />
+                <button id="snap-save" type="button" class="cp-btn cp-btn--sm cp-btn--primary">Save snapshot</button>
+                <button id="snap-refresh" type="button" class="cp-btn cp-btn--sm cp-btn--ghost">Refresh</button>
+              </div>
+              <ul id="snap-list" class="rg-snaps"></ul>
+            </section>
+            <section class="rg__panel" aria-labelledby="score-title">
+              <h4 id="score-title">Score tracker</h4>
+              <div class="rg__inline">
+                <input id="score-value" type="number" min="0" max="1000" inputmode="numeric" placeholder="score" aria-label="Score from the Scoring Report" />
+                <input id="score-note" type="text" placeholder="what I just changed" spellcheck="false" autocomplete="off" aria-label="What you just changed" />
+                <button id="score-add" type="button" class="cp-btn cp-btn--sm cp-btn--primary">Log</button>
+                <button id="score-clear" type="button" class="cp-btn cp-btn--sm cp-btn--ghost">Clear</button>
+              </div>
+              <div id="score-body"></div>
+            </section>
+            <section class="rg__panel" aria-labelledby="timer-title">
+              <h4 id="timer-title">Round timer</h4>
+              <p id="timer-display" class="rg-timer" role="timer" aria-live="off">4:00:00</p>
+              <p id="timer-phase" class="cp-hint">Not started</p>
+              <div class="rg__inline">
+                <button id="timer-toggle" type="button" class="cp-btn cp-btn--sm cp-btn--primary">Start</button>
+                <button id="timer-reset" type="button" class="cp-btn cp-btn--sm cp-btn--ghost">Reset</button>
+                <select id="timer-length" aria-label="Round length">
+                  <option value="240">4 hours</option>
+                  <option value="120">2 hours</option>
+                  <option value="60">1 hour</option>
+                  <option value="30">30 minutes</option>
+                </select>
+              </div>
+            </section>
+          </div>
+
         </div>
+      </section>
+
+      <section id="range-compare" class="rg__card" aria-labelledby="range-compare-title" hidden>
+        <h2 id="range-compare-title">Compare two runs</h2>
+        <p class="cp-hint">See what an Apply changed compared with the Audit before it: findings that disappeared, new ones, and every line added to or removed from the app, file, port and process logs.</p>
+        <div class="rg__inline rg__cmp-pick">
+          <label><span>Run A (before)</span><select id="cmp-a"></select></label>
+          <label><span>Run B (after)</span><select id="cmp-b"></select></label>
+          <button id="cmp-go" type="button" class="cp-btn cp-btn--primary">Compare</button>
+        </div>
+        <div id="cmp-out" class="rg-cmp"></div>
       </section>
 
       <section class="rg__card" aria-labelledby="range-runs-title">
@@ -310,7 +384,7 @@ const setupCommands = [
   import '../scripts/range';
 </script>
 
-<style>
+<style is:global>
   .rg {
     display: grid;
     gap: 1.25rem;
@@ -492,6 +566,172 @@ const setupCommands = [
     font-style: normal;
     color: var(--sl-color-gray-3);
     font-weight: 400;
+  }
+  .rg__inline {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.45rem;
+  }
+  .rg__inline input[type='text'],
+  .rg__inline input[type='number'] {
+    flex: 1 1 8rem;
+    min-width: 0;
+  }
+  .rg__panels {
+    display: grid;
+    gap: 0.75rem;
+    margin-top: 0.9rem;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 17rem), 1fr));
+  }
+  .rg__panel {
+    padding: 0.8rem 0.9rem;
+    border: 1px solid var(--cp-border);
+    border-radius: var(--cp-radius-sm);
+    background: var(--cp-card);
+  }
+  .rg__panel h4 {
+    margin: 0 0 0.4rem;
+    font-size: var(--sl-text-base);
+  }
+  .rg-snaps,
+  .rg-score__list {
+    display: grid;
+    gap: 0.4rem;
+    margin: 0.6rem 0 0;
+    padding: 0;
+    list-style: none;
+  }
+  .rg-snap {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.3rem 0.6rem;
+  }
+  .rg-snap__actions {
+    display: inline-flex;
+    gap: 0.3rem;
+    margin-left: auto;
+  }
+  .rg-score__chart {
+    width: 100%;
+    height: auto;
+    margin: 0.4rem 0;
+  }
+  .rg-score__sum {
+    margin: 0.4rem 0 0;
+    font-weight: 600;
+  }
+  .rg-score__list li.is-drop {
+    padding: 0.3rem 0.5rem;
+    border-left: 3px solid var(--cp-danger);
+    background: var(--cp-danger-low);
+    border-radius: var(--cp-radius-xs);
+  }
+  .rg-score__move {
+    font-variant-numeric: tabular-nums;
+  }
+  .rg-score__warn {
+    margin: 0.2rem 0 0;
+    font-size: var(--sl-text-sm);
+  }
+  .rg-timer {
+    margin: 0;
+    font-family: var(--cp-font-display);
+    font-size: 2.4rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+  }
+  .rg-timer[data-low='true'] {
+    color: var(--cp-danger);
+  }
+  .rg-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem;
+    margin-bottom: 0.6rem;
+  }
+  .rg-tabs[hidden] {
+    display: none;
+  }
+  .rg-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.4rem 0.8rem;
+    border: 1px solid var(--cp-border);
+    border-radius: 999px;
+    background: var(--cp-card);
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+  }
+  .rg-tab.is-active {
+    border-color: var(--sl-color-accent);
+    background: var(--sl-color-accent-low);
+    font-weight: 600;
+  }
+  .rg-tab__dot {
+    width: 0.55rem;
+    height: 0.55rem;
+    border-radius: 50%;
+    background: var(--cp-success);
+  }
+  .rg__file {
+    position: relative;
+    cursor: pointer;
+  }
+  .rg__file input {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
+  }
+  .rg__file:focus-within {
+    outline: 2px solid var(--sl-color-accent);
+    outline-offset: 2px;
+  }
+  .rg-cmp {
+    display: grid;
+    gap: 0.6rem;
+    margin-top: 0.8rem;
+  }
+  .rg-cmp__group {
+    padding: 0.5rem 0.8rem;
+    border: 1px solid var(--cp-border);
+    border-radius: var(--cp-radius-sm);
+  }
+  .rg-cmp__group.is-good {
+    border-left: 3px solid var(--cp-success);
+  }
+  .rg-cmp__group.is-new {
+    border-left: 3px solid var(--cp-warn);
+  }
+  .rg-cmp__group.is-changed {
+    border-left: 3px solid var(--sl-color-accent);
+  }
+  .rg-cmp__group summary {
+    cursor: pointer;
+    font-weight: 600;
+  }
+  .rg-cmp__group ul {
+    margin: 0.4rem 0 0;
+    padding-left: 1.1rem;
+    max-height: 18rem;
+    overflow: auto;
+    font-size: var(--sl-text-sm);
+  }
+  .rg-cmp__group li.is-added {
+    color: var(--cp-success);
+  }
+  .rg-cmp__group li.is-removed {
+    color: var(--cp-danger);
+  }
+  .rg-cmp__pick label {
+    display: grid;
+    gap: 0.2rem;
   }
   .rg__bar {
     display: flex;

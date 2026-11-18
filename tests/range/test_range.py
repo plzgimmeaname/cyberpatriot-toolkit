@@ -488,6 +488,36 @@ class QemuDesktopTest(unittest.TestCase):
         self.assertIn(b"101", reply.split(b"\r\n")[0], reply)
 
 
+@unittest.skipUnless(
+    shutil.which("qemu-system-x86_64") and shutil.which("qemu-img"), "QEMU is needed to boot a throw-away VM"
+)
+class SnapshotTest(unittest.TestCase):
+    def test_save_replace_restore_and_delete_a_snapshot(self) -> None:
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        base = tmp / "blank.qcow2"
+        subprocess.run(["qemu-img", "create", "-q", "-f", "qcow2", str(base), "64M"], check=True)
+        run_dir = tmp / "run"
+        run_dir.mkdir()
+        image = {"id": "t", "family": "linux", "guest": {"waitForGuest": False, "accel": "tcg", "ramMb": 128, "cpus": 1}}
+        provider = providers.QemuProvider()
+        runtime = provider.start(image, base, run_dir, lambda text: None)
+        self.addCleanup(provider.stop, runtime, lambda text: None)
+
+        self.assertEqual(providers.qemu_snapshots(runtime), [])
+        providers.qemu_snapshot_save(runtime, "first")
+        providers.qemu_snapshot_save(runtime, "second")
+        providers.qemu_snapshot_save(runtime, "first")  # same name: replaced, not duplicated
+        self.assertEqual(sorted(s["name"] for s in providers.qemu_snapshots(runtime)), ["first", "second"])
+        providers.qemu_snapshot_restore(runtime, "second")
+        providers.qemu_snapshot_delete(runtime, "second")
+        self.assertEqual([s["name"] for s in providers.qemu_snapshots(runtime)], ["first"])
+        with self.assertRaises(providers.ProviderError):
+            providers.qemu_snapshot_restore(runtime, "nope")
+        with self.assertRaises(providers.ProviderError):
+            providers.qemu_snapshot_save(runtime, "bad name!")
+
+
 class ScreenTest(unittest.TestCase):
     PIXELS = bytes([255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255])
 
