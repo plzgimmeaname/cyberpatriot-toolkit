@@ -70,7 +70,11 @@ function secedit.exe {
 # Tests
 # ===========================================================================
 Assert 'Split-Names handles commas, semicolons and spaces' { (Split-Names 'alice, bob;carol   dave').Count -eq 4 }
-Assert 'Split-Names handles arrays' { (Split-Names @('alice', 'bob carol')).Count -eq 3 }
+Assert 'Split-Names: a config array element is ONE name, even with a space (local user "John Smith")' { $n = @(Split-Names @('alice', 'John Smith')); $n.Count -eq 2 -and $n[1] -eq 'John Smith' }
+Assert 'Split-Names: an array element with commas is still split' { (Split-Names @('alice, bob', 'carol')).Count -eq 3 }
+Assert 'Split-Names: typed names can be quoted ("John Smith" stays whole)' { $n = @(Split-Names 'alice "John Smith" bob'); $n.Count -eq 3 -and $n[1] -eq 'John Smith' }
+Assert 'Split-Names: DOMAIN\name and .\name are reduced to the name' { (@(Split-Names 'CORP\alice .\bob') -join ',') -eq 'alice,bob' }
+Assert 'Split-Names: $null, empty and a single name' { @(Split-Names $null).Count -eq 0 -and @(Split-Names '').Count -eq 0 -and @(Split-Names 'alice').Count -eq 1 }
 Assert 'Strong password accepted' { Test-StrongPassword 'Cyb3r!Patr1ot#2026' }
 Assert 'Weak password rejected (no symbol)' { -not (Test-StrongPassword 'Password12345') }
 Assert 'Short password rejected' { -not (Test-StrongPassword 'Ab1!') }
@@ -159,10 +163,10 @@ function Test-Path {
     return Microsoft.PowerShell.Management\Test-Path -Path $p
 }
 function Get-Item {
-    [CmdletBinding()] param([Parameter(Position = 0)][string]$Path, [string]$LiteralPath)
+    [CmdletBinding()] param([Parameter(Position = 0)][string]$Path, [string]$LiteralPath, [switch]$Force)
     $p = if ($LiteralPath) { $LiteralPath } else { $Path }
     if ($p -notmatch '^HK') { return Microsoft.PowerShell.Management\Get-Item @PSBoundParameters }
-    if (-not $script:FakeReg.ContainsKey($p)) { throw "Cannot find path '$p'" }
+    if (-not $script:FakeReg.ContainsKey($p)) { if ($ErrorActionPreference -eq 'Stop') { throw "Cannot find path '$p'" } else { return $null } }
     $o = [pscustomobject]@{ Vals = $script:FakeReg[$p]; ValueCount = $script:FakeReg[$p].Count
                             SubKeyCount = @($script:FakeReg.Keys | Where-Object { $_ -like "$p\*" }).Count }
     # like RegistryKey.GetValue: a REG_MULTI_SZ comes back as one string[] (even an empty one)
@@ -422,6 +426,334 @@ foreach ($d in 'a/b', 'AppData/Local/Microsoft/x', 'keep') { Microsoft.PowerShel
 foreach ($f in 'top.mp3', 'a/b/deep.mp3', 'AppData/Local/Microsoft/x/skip.mp3', 'keep/k.txt') { [IO.File]::WriteAllText((Join-Path $wroot $f), 'x') }
 $walked = @(Get-FilesOnePass @($wroot) '(?i)\\AppData\\Local\\Microsoft\\|/AppData/Local/Microsoft/' | ForEach-Object { $_.Name } | Sort-Object)
 Assert 'Get-FilesOnePass: finds nested files and skips the excluded folder' { ($walked -join ',') -eq 'deep.mp3,k.txt,top.mp3' }
+
+
+# --- v2.2.0 additions (second audit) ---------------------------------------------
+# Defender's own services run from ProgramData: they must never be offered for disabling
+$dv = Get-ServicePathVerdict '"C:\ProgramData\Microsoft\Windows Defender\Platform\4.18.2403.7-0\MsMpEng.exe"'
+Assert 'Service path: WinDefend (ProgramData\Microsoft\Windows Defender\Platform) is trusted, not "suspicious"' { $dv.Kind -eq 'trusted' -and -not $dv.Unquoted }
+Assert 'Service path: svchost group is trusted and quoted-free' { $v = Get-ServicePathVerdict 'C:\WINDOWS\system32\svchost.exe -k netsvcs -p'; $v.Kind -eq 'trusted' -and -not $v.Unquoted }
+Assert 'Service path: unquoted Program Files path with spaces is flagged, with the exe and arguments split' {
+    $v = Get-ServicePathVerdict 'C:\Program Files\Vuln Service\svc.exe -run'; $v.Unquoted -and $v.Exe -eq 'C:\Program Files\Vuln Service\svc.exe' -and $v.Rest -eq ' -run' }
+Assert 'Service path: a quoted path with spaces is not flagged' { -not (Get-ServicePathVerdict '"C:\Program Files\Vuln Service\svc.exe" -run').Unquoted }
+Assert 'Service path: an unquoted path with spaces OUTSIDE Program Files and Windows is flagged too' { (Get-ServicePathVerdict 'C:\My Tools\svc.exe').Unquoted }
+Assert 'Service path: a program in a user folder is suspicious' { (Get-ServicePathVerdict 'C:\Users\Public\svc.exe').Kind -eq 'suspicious' -and (Get-ServicePathVerdict 'C:\ProgramData\evil\a.exe').Kind -eq 'suspicious' }
+Assert 'Service path: cmd /c as the service program is suspicious even though cmd.exe is in Windows' { (Get-ServicePathVerdict 'C:\Windows\System32\cmd.exe /c C:\x\a.bat').Kind -eq 'suspicious' }
+Assert 'Service path: a third-party service in its own folder is "unusual" (listed, not disabled by default logic)' { (Get-ServicePathVerdict 'D:\Apps\foo\foo.exe').Kind -eq 'unusual' }
+Assert 'Service path: empty path gives none' { (Get-ServicePathVerdict '').Kind -eq 'none' }
+
+# Writable service folders: Users with Modify is a finding, Users with Read and Execute is not
+# SecurityIdentifier does not work off Windows, so a fake identity answers Translate() with its SID
+function New-FakeIdentity([string]$Sid) { $o = [pscustomobject]@{ Sid = $Sid }; $o | Add-Member ScriptMethod Translate { param($t) [pscustomobject]@{ Value = $this.Sid } }; $o }
+$sidUsers = New-FakeIdentity 'S-1-5-32-545'; $sidAdmins = New-FakeIdentity 'S-1-5-32-544'
+function New-FakeAce($Sid, $Rights, $Type = 'Allow') { [pscustomobject]@{ IdentityReference = $Sid; FileSystemRights = [System.Security.AccessControl.FileSystemRights]$Rights; AccessControlType = $Type } }
+Assert 'ACL: Users with Modify can change the file -> flagged' { Test-WritableByUsers ([pscustomobject]@{ Access = @((New-FakeAce $sidAdmins 'FullControl'), (New-FakeAce $sidUsers 'Modify')) }) }
+Assert 'ACL: Users with Read and Execute only -> fine' { -not (Test-WritableByUsers ([pscustomobject]@{ Access = @((New-FakeAce $sidAdmins 'FullControl'), (New-FakeAce $sidUsers 'ReadAndExecute')) }) ) }
+Assert 'ACL: a Deny entry for Users is not a finding' { -not (Test-WritableByUsers ([pscustomobject]@{ Access = @((New-FakeAce $sidUsers 'FullControl' 'Deny')) })) }
+Assert 'ACL: Everyone with WriteData -> flagged' { Test-WritableByUsers ([pscustomobject]@{ Access = @((New-FakeAce (New-FakeIdentity 'S-1-1-0') 'WriteData')) }) }
+
+# hosts file lines
+Assert 'hosts: comments, blanks and localhost lines are normal' { -not ('', '# 127.0.0.1 bank.com', '127.0.0.1 localhost', '::1     localhost', '127.0.0.1 localhost # loopback' | Where-Object { Test-HostsLineSuspicious $_ }) }
+Assert 'hosts: a redirected website is suspicious (also with a trailing comment)' { (Test-HostsLineSuspicious '10.0.0.5 windowsupdate.microsoft.com') -and (Test-HostsLineSuspicious '1.2.3.4 www.bank.com # x') -and (Test-HostsLineSuspicious '127.0.0.1 localhost bank.com') }
+
+# A failing sub-step must not stop the steps after it (one bad COM object used to end the whole backdoors section)
+$script:Mode = 'Audit'; Reset-Results; $script:StepRan = $false
+Invoke-SafeStep 'first' { throw 'boom' }
+Invoke-SafeStep 'second' { $script:StepRan = $true }
+Assert 'Invoke-SafeStep: an error is a FAILED result and the next step still runs' { $script:StepRan -and @($script:Results | Where-Object { $_.Status -eq 'FAILED' -and $_.Text -like 'first stopped early*' }).Count -eq 1 }
+
+# One typed admin name must stay an array (+= glued "alice" and "carol" into "alicecarol")
+$script:AuthAdmins = 'alice'; $script:AuthUsers = ''; $script:Critical = 'rdp'; $script:Me = 'carol'
+Complete-ReadmeInfo
+Assert 'README: a single typed name is still a list, and the logged-in user is appended as its own entry' { $script:AuthAdmins.Count -eq 2 -and $script:AuthAdmins[0] -eq 'alice' -and $script:AuthAdmins[1] -eq 'carol' }
+$script:AuthAdmins = @('alice'); $script:AuthUsers = @('carol'); $script:Critical = @(); $script:Me = 'alice'
+
+# Config files with odd content
+$odd = Join-Path $tmp 'odd [1].psd1'
+[IO.File]::WriteAllText($odd, "@{ AuthorizedAdmins = 'alice'; AuthorizedUsers = @('John Smith', 'carol'); EnableLockout = `$false; InstallUpdates = 'maybe'; NewPassword = 12345 }")
+Import-ReadmeConfig $odd
+Assert 'Config: one string, a name with a space, $false for EnableLockout, a bad InstallUpdates and a numeric password all load' {
+    $script:AuthAdmins.Count -eq 1 -and $script:AuthUsers -contains 'John Smith' -and $script:EnableLockout -eq 'no' -and $script:InstallUpdates -eq 'ask' -and $script:NewPassword -eq '12345' }
+[IO.File]::WriteAllText($odd, "@{ CriticalServices = 'rdp IIS' }")
+$script:EnableLockout = 'yes'; $script:InstallUpdates = 'ask'; $script:NewPassword = ''
+Import-ReadmeConfig $odd
+Assert 'Config: missing keys leave the defaults; critical keywords are lower-cased and split' { $script:AuthAdmins.Count -eq 0 -and $script:AuthUsers.Count -eq 0 -and ($script:Critical -join ',') -eq 'rdp,iis' -and $script:EnableLockout -eq 'yes' }
+[IO.File]::WriteAllText($odd, "@('alice','bob')")
+Assert 'Config: a file that is not a hashtable is an error the caller reports (not a crash)' { try { Import-ReadmeConfig $odd; $false } catch { "$($_.Exception.Message)".Length -gt 0 } }
+[IO.File]::WriteAllText($odd, "@{ AuthorizedAdmins = @('alice',) }")
+Assert 'Config: a trailing comma is an error the caller reports (not a crash)' { try { Import-ReadmeConfig $odd; $false } catch { $true } }
+$script:AuthAdmins = @('alice'); $script:AuthUsers = @('carol'); $script:Critical = @()
+
+
+# Services: one Get-Service for the whole catalog; refused Set-Service falls back to the registry Start value
+function Set-ItemProperty { param($Path, $LiteralPath, $Name, $Value, $Type)
+    $p = if ($LiteralPath) { $LiteralPath } else { $Path }
+    if (-not $script:FakeReg.ContainsKey($p)) { throw "Cannot find path '$p'" }
+    $script:FakeReg[$p][$Name] = $Value }
+$script:GsCalls = 0; $script:SvcSet = @{}
+function New-FakeService($Name, $Status, $Start) { [pscustomobject]@{ Name = $Name; DisplayName = $Name; Status = $Status; StartType = $Start } }
+function Get-Service { param($Name) $script:GsCalls++
+    @((New-FakeService 'RemoteRegistry' 'Running' 'Automatic'), (New-FakeService 'Spooler' 'Running' 'Automatic'), (New-FakeService 'WinDefend' 'Stopped' 'Disabled'),
+      (New-FakeService 'EventLog' 'Running' 'Automatic'), (New-FakeService 'NTDS' 'Running' 'Automatic')) | Where-Object { -not $Name -or $_.Name -eq $Name } }
+function Set-Service { param($Name, $StartupType) $script:SvcSet[$Name] = "$StartupType" }
+function Stop-Service { }
+function Start-Service { }
+Reset-Reg; Reset-Results; $script:Mode = 'Apply'; $script:AssumeYes = $true; $script:Critical = @('print'); $script:IsDC = $false
+Invoke-Services
+Assert 'Services: the whole catalog costs one Get-Service call' { $script:GsCalls -eq 1 }
+Assert 'Services: Remote Registry is disabled, the README-critical Print Spooler is kept' { $script:SvcSet['RemoteRegistry'] -eq 'Disabled' -and -not $script:SvcSet.ContainsKey('Spooler') }
+Assert 'Services: a disabled Defender service is switched back on' { $script:SvcSet['WinDefend'] -eq 'Automatic' }
+function Set-Service { throw 'Access is denied' }
+Set-FakeReg 'HKLM:\SYSTEM\CurrentControlSet\Services\mpssvc' 'Start' 4
+Set-ServiceStartMode 'mpssvc' 'Automatic'
+Assert 'Set-ServiceStartMode: a refused Set-Service falls back to the registry Start value (2 = Automatic)' { $script:FakeReg['HKLM:\SYSTEM\CurrentControlSet\Services\mpssvc']['Start'] -eq 2 }
+Assert 'Set-ServiceStartMode: no service key and a refusal -> the error is thrown' { try { Set-ServiceStartMode 'nosuchsvc' 'Disabled'; $false } catch { $true } }
+$script:Critical = @()
+
+# Cached logons: "4 or fewer" - lower values are left alone, higher ones are lowered
+$wlk = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+Reset-Reg; Reset-Results; Set-FakeReg $wlk 'CachedLogonsCount' '2'; Invoke-SecurityOptions
+Assert 'Security: CachedLogonsCount 2 stays 2 (never raised to 4)' { $script:FakeReg[$wlk]['CachedLogonsCount'] -eq '2' }
+Reset-Reg; Reset-Results; Set-FakeReg $wlk 'CachedLogonsCount' '10'; Invoke-SecurityOptions
+Assert 'Security: CachedLogonsCount 10 is lowered to 4' { $script:FakeReg[$wlk]['CachedLogonsCount'] -eq '4' }
+Assert 'Security: SMBv1 is switched off in the registry too' { $script:FakeReg['HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters']['SMB1'] -eq 0 }
+function Get-ExecutionPolicy { 'RemoteSigned' }
+function bcdedit.exe { 'nx    OptIn' }
+Reset-Reg; Reset-Results; Invoke-Misc
+Assert 'Misc: WPAD is turned off in both the Internet Settings key and the policy key' {
+    $script:FakeReg['HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\WinHttp']['DisableWpad'] -eq 1 -and $script:FakeReg['HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinHttp']['DisableWpad'] -eq 1 }
+Assert 'Misc: LLMNR off and nothing FAILED (the Registry:: provider paths of other users do not exist off Windows)' { $script:FakeReg['HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient']['EnableMulticast'] -eq 0 -and -not @($script:Results | Where-Object { $_.Status -eq 'FAILED' -and $_.Text -notlike '*HKEY_USERS*' }).Count }
+
+
+# Hacking-tool names: real tools match, ordinary documents do not (with -Yes they would be deleted)
+Assert 'Tool names: nc.exe, mimikatz_x64.exe, john.exe, hashcat.exe, hydra.exe, xmrig.zip, cain.exe are tools' {
+    -not @('nc.exe', 'mimikatz_x64.exe', 'john.exe', 'john-the-ripper-1.9.zip', 'hashcat.exe', 'hydra.exe', 'xmrig-6.zip', 'cain.exe', 'psexec64.exe', 'my-backdoor.ps1' | Where-Object { -not (Test-ToolFileName $_) }).Count }
+Assert 'Tool names: john_smith_taxes.zip, hydration.py, johnny.zip, determiner.zip, cainsville.zip, miner.py are NOT tools' {
+    -not @('john_smith_taxes.zip', 'hydration.py', 'johnny.zip', 'determiner.zip', 'cainsville.zip', 'notes.py', 'minerals.zip' | Where-Object { Test-ToolFileName $_ }).Count }
+$wroot2 = Join-Path $tmp 'walk2'
+Microsoft.PowerShell.Management\New-Item -ItemType Directory -Path (Join-Path $wroot2 'x') -Force | Out-Null
+foreach ($f in 'a.MP3', 'x/b.txt', 'x/c.log', 'x/d.dat') { [IO.File]::WriteAllText((Join-Path $wroot2 $f), 'x') }
+Assert 'Get-FilesOnePass -Extensions: only the wanted extensions are handed on (case-insensitive), nothing else is kept in memory' {
+    (@(Get-FilesOnePass @($wroot2) $null @('.mp3', '.txt') | ForEach-Object { $_.Name } | Sort-Object) -join ',') -eq 'a.MP3,b.txt' }
+Assert 'Get-FilesOnePass: an unreadable or missing root is skipped without an error' { @(Get-FilesOnePass @((Join-Path $tmp 'does-not-exist')) $null).Count -eq 0 }
+
+
+# Firewall: custom inbound rules use two bulk filter queries, not one WMI call per rule
+$script:Bulk = 0; $script:Piped = 0
+$fwRules = @(
+    [pscustomobject]@{ Name = 'r1'; InstanceID = 'r1'; DisplayName = 'Nice app'; DisplayGroup = $null },
+    [pscustomobject]@{ Name = 'r2'; InstanceID = 'r2'; DisplayName = 'Backdoor'; DisplayGroup = $null },
+    [pscustomobject]@{ Name = 'r3'; InstanceID = 'r3'; DisplayName = 'Allow everything'; DisplayGroup = $null })
+function Get-NetFirewallRule { param($DisplayGroup, $Name, $Direction, $Action, $Enabled) if ($Action -eq 'Allow') { $fwRules } }
+function Get-NetFirewallApplicationFilter { param([Parameter(ValueFromPipeline = $true)]$InputObject, [switch]$All)
+    process { if ($All) { $script:Bulk++; [pscustomobject]@{ InstanceID = 'r1'; Program = 'C:\Program Files\Nice\nice.exe' }; [pscustomobject]@{ InstanceID = 'r2'; Program = 'C:\Users\Public\nc.exe' }; [pscustomobject]@{ InstanceID = 'r3'; Program = 'Any' } } else { $script:Piped++ } } }
+function Get-NetFirewallPortFilter { param([Parameter(ValueFromPipeline = $true)]$InputObject, [switch]$All)
+    process { if ($All) { $script:Bulk++; [pscustomobject]@{ InstanceID = 'r1'; LocalPort = '8080'; Protocol = 'TCP' }; [pscustomobject]@{ InstanceID = 'r2'; LocalPort = '4444'; Protocol = 'TCP' }; [pscustomobject]@{ InstanceID = 'r3'; LocalPort = 'Any'; Protocol = 'Any' } } else { $script:Piped++ } } }
+$script:Disabled = @(); function Disable-NetFirewallRule { param($Name) $script:Disabled += $Name }
+function Get-NetFirewallProfile { @([pscustomobject]@{ Name = 'Domain'; Enabled = 'True'; DefaultInboundAction = 'Block'; DefaultOutboundAction = 'Allow'; LogBlocked = 'True'; NotifyOnListen = 'True' }) }
+Reset-Reg; Reset-Results; $script:Mode = 'Apply'; $script:AssumeYes = $true; $script:Critical = @()
+Invoke-Firewall
+Assert 'Firewall: 3 custom rules cost 2 bulk filter queries and no per-rule queries' { $script:Bulk -eq 2 -and $script:Piped -eq 0 }
+Assert 'Firewall: the netcat-path rule and the allow-everything rule are disabled, the normal app rule is only listed' {
+    ($script:Disabled -contains 'r2') -and ($script:Disabled -contains 'r3') -and ($script:Disabled -notcontains 'r1') }
+
+# Timing: every section is timed and the slowest ones show in the summary
+function Invoke-FakeSlow { Start-Sleep -Milliseconds 30 }
+$realSections = $Sections; $Sections = @(@{ Id = 'fake'; Title = 'Fake section'; Fn = 'Invoke-FakeSlow' })
+$script:StartTime = Get-Date; $script:Timings = New-Object System.Collections.Generic.List[object]
+Invoke-Section 'fake'
+$Sections = $realSections
+Assert 'Timing: Invoke-Section records the section id and its seconds' { $script:Timings.Count -eq 1 -and $script:Timings[0].Section -eq 'fake' -and $script:Timings[0].Seconds -ge 0 }
+Assert 'Timing: a section that throws is still timed and reported FAILED' {
+    function Invoke-FakeBroken { throw 'x' }
+    $Sections = @(@{ Id = 'broken'; Title = 'Broken'; Fn = 'Invoke-FakeBroken' }); Reset-Results; Invoke-Section 'broken'
+    $Sections = $realSections
+    $script:Timings.Count -eq 2 -and @($script:Results | Where-Object Status -eq 'FAILED').Count -eq 1 }
+
+
+# DHCP server role: audit log on, scopes and the options that redirect clients are listed
+$script:DhcpAudit = $false
+function Get-Service { param($Name) if ($Name -eq 'DHCPServer') { New-FakeService 'DHCPServer' 'Running' 'Automatic' } }
+function Get-DhcpServerAuditLog { [pscustomobject]@{ Enable = $script:DhcpAudit } }
+function Set-DhcpServerAuditLog { param($Enable) $script:DhcpAudit = [bool]$Enable }
+function Get-DhcpServerv4Scope { [pscustomobject]@{ ScopeId = '10.0.0.0'; Name = 'LAN'; StartRange = '10.0.0.10'; EndRange = '10.0.0.200'; State = 'Active' } }
+function Get-DhcpServerv4OptionValue { param($ScopeId) if ($ScopeId) { [pscustomobject]@{ OptionId = 6; Name = 'DNS Servers'; Value = @('6.6.6.6') } } else { [pscustomobject]@{ OptionId = 3; Name = 'Router'; Value = @('10.0.0.1') } } }
+Reset-Results; $script:Mode = 'Apply'; $script:AssumeYes = $true; $script:Critical = @('dhcp'); $script:IsDC = $false; $script:HasAD = $false
+Invoke-Roles
+Assert 'DHCP: audit logging is switched on' { $script:DhcpAudit }
+Assert 'DHCP: the planted DNS server option (006) and the router option (003) are reported' {
+    @($script:Results | Where-Object { $_.Status -eq 'REVIEW' -and $_.Text -like 'DHCP option 6*6.6.6.6*' }).Count -eq 1 -and @($script:Results | Where-Object { $_.Status -eq 'REVIEW' -and $_.Text -like 'DHCP option 3*' }).Count -eq 1 }
+Assert 'DHCP: the scope is listed for checking against the README' { @($script:Results | Where-Object { $_.Status -eq 'REVIEW' -and $_.Text -like 'DHCP scope 10.0.0.0*' }).Count -eq 1 }
+$script:Critical = @()
+
+# Cleared event logs are reported (event 1102 in Security, 104 in System)
+function Get-WinEvent { param($FilterHashtable, $MaxEvents)
+    if ($FilterHashtable.LogName -eq 'Security') { [pscustomobject]@{ TimeCreated = [datetime]'2026-03-01 10:00'; Id = 1102 } } else { throw 'No events were found that match the specified selection criteria.' } }
+$cl = @(Get-LogClearedEvents)
+Assert 'Cleared logs: a Security 1102 event is found, a System log without 104 is not an error' { $cl.Count -eq 1 -and $cl[0].Log -eq 'Security' -and $cl[0].Id -eq 1102 }
+Remove-Item Function:\Get-WinEvent
+
+
+# Defender: switches outside the policy keys, exclusions (the scoring client's own is kept), third-party antivirus
+$script:RemovedEx = @()
+function Get-Service { param($Name) if ($Name -eq 'WinDefend') { New-FakeService 'WinDefend' 'Running' 'Automatic' } }
+function Get-MpPreference { [pscustomobject]@{ DisableRealtimeMonitoring = $false; DisableBehaviorMonitoring = $false; DisableIOAVProtection = $false; PUAProtection = 1; MAPSReporting = 2; SubmitSamplesConsent = 1
+    EnableNetworkProtection = 1; ExclusionPath = @('C:\Users\Public\tools', 'C:\CyberPatriot\CCSClient.exe'); ExclusionExtension = @(); ExclusionProcess = @('evil.exe') } }
+function Remove-MpPreference { param($ExclusionPath, $ExclusionExtension, $ExclusionProcess) $script:RemovedEx += @($ExclusionPath, $ExclusionExtension, $ExclusionProcess | Where-Object { $_ }) }
+function Set-MpPreference { }
+function Get-MpComputerStatus { [pscustomobject]@{ IsTamperProtected = $true; AntivirusSignatureAge = 0 } }
+function Update-MpSignature { }
+function Get-CimInstance { param([Parameter(Position = 0)]$ClassName, $Namespace) if ($ClassName -eq 'AntiVirusProduct') { [pscustomobject]@{ displayName = 'Windows Defender' }; [pscustomobject]@{ displayName = 'ContosoAV' } } }
+Reset-Reg; Reset-Results; $script:Mode = 'Apply'; $script:AssumeYes = $true
+Set-FakeReg 'HKLM:\SOFTWARE\Microsoft\Windows Defender' 'DisableAntiSpyware' 1
+Invoke-Defender
+Assert 'Defender: DisableAntiSpyware = 1 outside the policy key is removed' { -not $script:FakeReg['HKLM:\SOFTWARE\Microsoft\Windows Defender'].Contains('DisableAntiSpyware') }
+Assert 'Defender: a planted exclusion is removed, the CyberPatriot client exclusion is kept' {
+    $script:RemovedEx -contains 'C:\Users\Public\tools' -and $script:RemovedEx -contains 'evil.exe' -and $script:RemovedEx -notcontains 'C:\CyberPatriot\CCSClient.exe' }
+Assert 'Defender: a registered third-party antivirus is reported (Defender itself is not)' {
+    @($script:Results | Where-Object { $_.Status -eq 'REVIEW' -and $_.Text -like '*ContosoAV*' }).Count -eq 1 -and @($script:Results | Where-Object { $_.Text -like '*Another antivirus*Windows Defender*' }).Count -eq 0 }
+Remove-Item Function:\Get-CimInstance
+
+
+# --- Backdoors section end to end, with a fake registry, fake tasks, fake services and a real hosts file ---------------
+$savedRoot = $env:SystemRoot; $savedDrive = $env:SystemDrive; $savedPD = $env:ProgramData
+$env:SystemRoot = Join-Path $tmp 'win'; $env:SystemDrive = Join-Path $tmp 'sysdrive'; $env:ProgramData = Join-Path $tmp 'pd'
+$hostsDir = Join-Path $env:SystemRoot 'System32/drivers/etc'
+Microsoft.PowerShell.Management\New-Item -ItemType Directory -Path $hostsDir -Force | Out-Null
+Microsoft.PowerShell.Management\New-Item -ItemType Directory -Path (Join-Path $env:SystemDrive 'Users') -Force | Out-Null
+$hostsFile = Join-Path $hostsDir 'hosts'
+Set-Content -Path $hostsFile -Value @('# Copyright (c) Microsoft', '127.0.0.1 localhost # loopback', '', '10.9.9.9 windowsupdate.microsoft.com')
+function Get-ChildItem {
+    [CmdletBinding()] param([Parameter(Position = 0)][string]$Path, [string]$LiteralPath, [switch]$Directory, [switch]$File, [switch]$Force, [switch]$Recurse, [string]$Filter)
+    $p = if ($LiteralPath) { $LiteralPath } else { $Path }
+    if ($p -match '^HK') {
+        foreach ($k in @($script:FakeReg.Keys | Where-Object { $_ -like "$p\*" -and ($_.Substring($p.Length + 1) -notmatch '\\') })) {
+            $o = [pscustomobject]@{ PSChildName = $k.Substring($p.Length + 1); PSPath = $k; Vals = $script:FakeReg[$k] }
+            $o | Add-Member ScriptMethod GetValue { param($n) if ($this.Vals.Contains($n)) { $this.Vals[$n] } else { $null } }
+            $o
+        }
+        return
+    }
+    Microsoft.PowerShell.Management\Get-ChildItem @PSBoundParameters
+}
+function Get-ScheduledTask { @(
+    [pscustomobject]@{ TaskPath = '\'; TaskName = 'Updater'; Actions = @([pscustomobject]@{ Execute = 'powershell.exe'; Arguments = '-w hidden -enc SQBFAFgA' }) },
+    [pscustomobject]@{ TaskPath = '\Microsoft\Windows\Defrag\'; TaskName = 'ScheduledDefrag'; Actions = @([pscustomobject]@{ Execute = '%windir%\system32\defrag.exe'; Arguments = '-c -h' }) }) }
+function Unregister-ScheduledTask { param($TaskName, $TaskPath, $Confirm) $script:TaskGone += $TaskName }
+function Export-ScheduledTask { 'xml' }
+function Get-CimInstance { param([Parameter(Position = 0)]$ClassName, $Namespace)
+    if ($ClassName -eq 'Win32_Service') {
+        @([pscustomobject]@{ Name = 'WinDefend'; DisplayName = 'Microsoft Defender Antivirus Service'; PathName = '"C:\ProgramData\Microsoft\Windows Defender\Platform\4.18.2403.7-0\MsMpEng.exe"' },
+          [pscustomobject]@{ Name = 'WdNisSvc'; DisplayName = 'Defender Network Inspection'; PathName = '"C:\ProgramData\Microsoft\Windows Defender\Platform\4.18.2403.7-0\NisSrv.exe"' },
+          [pscustomobject]@{ Name = 'evilsvc'; DisplayName = 'Evil'; PathName = 'C:\Users\Public\evil.exe' },
+          [pscustomobject]@{ Name = 'vulnsvc'; DisplayName = 'Vulnerable'; PathName = 'C:\Program Files\Vuln Service\svc.exe -run' },
+          [pscustomobject]@{ Name = 'NTDS'; DisplayName = 'AD DS'; PathName = 'C:\Program Files\Some Path\x.exe' }) } }
+function Get-Acl { param($LiteralPath, $ErrorAction) [pscustomobject]@{ Access = @((New-FakeAce $sidUsers 'Modify')) } }
+function Get-NetTCPConnection { @([pscustomobject]@{ LocalPort = 4444; LocalAddress = '0.0.0.0'; OwningProcess = 99999 }) }
+function Get-Process { param($Id) [pscustomobject]@{ ProcessName = 'nc' } }
+$script:StoppedPids = @(); function Stop-Process { param($Id) $script:StoppedPids += $Id }
+$script:TaskGone = @(); $script:SvcSet = @{}
+function Set-Service { param($Name, $StartupType) $script:SvcSet[$Name] = "$StartupType" }
+Reset-Reg; Reset-Results; $script:Mode = 'Apply'; $script:AssumeYes = $true; $script:IsDC = $true
+Set-FakeReg 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run' 'Updater' 'powershell.exe -w hidden -enc SQBFAFgA'
+Set-FakeReg 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run' 'OneDrive' '"C:\Program Files\Microsoft OneDrive\OneDrive.exe" /background'
+Set-FakeReg 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\sethc.exe' 'Debugger' 'C:\Windows\System32\cmd.exe'
+Set-FakeReg 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\utilman.exe' 'Debugger' 'C:\Windows\System32\cmd.exe'
+Set-FakeReg 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' 'Taskman' 'C:\Users\Public\tm.exe'
+Set-FakeReg 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' 'Userinit' 'C:\Windows\system32\userinit.exe,'
+Set-FakeReg 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList' 'ghost' 0
+Set-FakeReg 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'Security Packages' ([string[]]@('kerberos', 'mimilib'))
+Set-FakeReg 'HKLM:\SYSTEM\CurrentControlSet\Services\vulnsvc' 'ImagePath' 'C:\Program Files\Vuln Service\svc.exe -run'
+Invoke-Backdoors
+Assert 'Backdoors: nothing FAILED (every step ran to the end)' { -not @($script:Results | Where-Object { $_.Status -eq 'FAILED' }).Count }
+Assert 'Backdoors: the suspicious Run entry is deleted, OneDrive stays' { -not $script:FakeReg['HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'].Contains('Updater') -and $script:FakeReg['HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'].Contains('OneDrive') }
+Assert 'Backdoors: Debugger hijacks are removed in both the 64-bit and the Wow6432Node Image File Execution Options' {
+    -not $script:FakeReg['HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\sethc.exe'].Contains('Debugger') -and
+    -not $script:FakeReg['HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\utilman.exe'].Contains('Debugger') }
+Assert 'Backdoors: Winlogon Taskman is removed; a hidden account list and the mimilib LSA package are reported' {
+    -not $script:FakeReg['HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'].Contains('Taskman') -and
+    @($script:Results | Where-Object { $_.Status -eq 'REVIEW' -and $_.Text -like '*SpecialAccounts*ghost*' }).Count -eq 1 -and @($script:Results | Where-Object { $_.Status -eq 'REVIEW' -and $_.Text -like '*mimilib*' }).Count -eq 1 }
+Assert 'Backdoors: the planted task is deleted, the Microsoft defrag task is not' { $script:TaskGone -contains 'Updater' -and $script:TaskGone -notcontains 'ScheduledDefrag' }
+Assert 'Backdoors: Defender services (ProgramData\Microsoft\Windows Defender) are NOT disabled; the Public\evil.exe service is' {
+    $script:SvcSet['evilsvc'] -eq 'Disabled' -and -not $script:SvcSet.ContainsKey('WinDefend') -and -not $script:SvcSet.ContainsKey('WdNisSvc') }
+Assert 'Backdoors: the unquoted service path is quoted in the registry' { $script:FakeReg['HKLM:\SYSTEM\CurrentControlSet\Services\vulnsvc']['ImagePath'] -eq '"C:\Program Files\Vuln Service\svc.exe" -run' }
+Assert 'Backdoors: on a Domain Controller an NTDS path is never rewritten' { @($script:Results | Where-Object { $_.Text -like '*Quoted the path of service NTDS*' }).Count -eq 0 }
+Assert 'Backdoors: a writable service folder is reported' { @($script:Results | Where-Object { $_.Status -eq 'REVIEW' -and $_.Text -like '*ordinary users can change*' }).Count -eq 1 }
+Assert 'Backdoors: the redirected hosts line is commented out, the loopback line is kept, the file is backed up' {
+    $h = Get-Content -LiteralPath $hostsFile; ($h -contains '127.0.0.1 localhost # loopback') -and ($h -contains '# disabled by harden.ps1: 10.9.9.9 windowsupdate.microsoft.com') -and (Microsoft.PowerShell.Management\Test-Path -LiteralPath (Join-Path $BackupDir 'hosts')) }
+Assert 'Backdoors: a netcat listener is stopped' { $script:StoppedPids -contains 99999 }
+Reset-Results; $script:Mode = 'Audit'
+Set-FakeReg 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run' 'Updater' 'powershell.exe -w hidden -enc SQBFAFgA'
+Set-FakeReg 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\sethc.exe' 'Debugger' 'C:\Windows\System32\cmd.exe'
+$script:TaskGone = @(); $script:StoppedPids = @(); $script:SvcSet = @{}
+Invoke-Backdoors
+Assert 'Backdoors: Audit mode changes nothing (registry, tasks, services, processes)' {
+    $script:FakeReg['HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'].Contains('Updater') -and $script:FakeReg['HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\sethc.exe'].Contains('Debugger') -and
+    $script:TaskGone.Count -eq 0 -and $script:StoppedPids.Count -eq 0 -and $script:SvcSet.Count -eq 0 }
+$script:IsDC = $false
+Remove-Item Function:\Get-CimInstance
+$env:SystemRoot = $savedRoot; $env:SystemDrive = $savedDrive; $env:ProgramData = $savedPD
+
+
+# One file that cannot be deleted must not stop the others
+$gdir = Join-Path $tmp 'gone'; Microsoft.PowerShell.Management\New-Item -ItemType Directory -Path $gdir -Force | Out-Null
+$g1 = Join-Path $gdir 'a.mp3'; $g3 = Join-Path $gdir 'c.mp3'; [IO.File]::WriteAllText($g1, 'x'); [IO.File]::WriteAllText($g3, 'x')
+$threw = $false; try { Remove-FileList @($g1, (Join-Path $gdir 'missing.mp3'), $g3) } catch { $threw = "$($_.Exception.Message)" -like '1 of 3*' }
+Assert 'Remove-FileList: a file that cannot be deleted is reported at the end, the other files are still deleted' { $threw -and -not (Microsoft.PowerShell.Management\Test-Path -LiteralPath $g1) -and -not (Microsoft.PowerShell.Management\Test-Path -LiteralPath $g3) }
+
+
+# LocalAccountTokenFilterPolicy: only a planted 1 is changed, never when the README lists WinRM
+$sysk = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+Reset-Reg; Reset-Results; $script:Mode = 'Apply'; $script:Critical = @(); Set-FakeReg $sysk 'LocalAccountTokenFilterPolicy' 1; Invoke-SecurityOptions
+Assert 'Security: a planted LocalAccountTokenFilterPolicy = 1 is set back to 0' { $script:FakeReg[$sysk]['LocalAccountTokenFilterPolicy'] -eq 0 }
+Reset-Reg; Reset-Results; $script:Critical = @('winrm'); Set-FakeReg $sysk 'LocalAccountTokenFilterPolicy' 1; Invoke-SecurityOptions
+Assert 'Security: with WinRM in the README the value 1 is kept and reported' { $script:FakeReg[$sysk]['LocalAccountTokenFilterPolicy'] -eq 1 -and @($script:Results | Where-Object { $_.Status -eq 'REVIEW' -and $_.Text -like 'LocalAccountTokenFilterPolicy*' }).Count -eq 1 }
+Reset-Reg; Reset-Results; $script:Critical = @(); Invoke-SecurityOptions
+Assert 'Security: a clean system gets no LocalAccountTokenFilterPolicy value written' { -not $script:FakeReg[$sysk].Contains('LocalAccountTokenFilterPolicy') }
+
+
+# Windows Home / no secedit: the password numbers go through "net accounts", complexity is left for a human, nothing crashes
+$secGood = ${function:secedit.exe}
+function secedit.exe { throw 'The term secedit.exe is not recognized as a name of a cmdlet, function, script file, or executable program.' }
+$script:NetArgs = @(); $global:LASTEXITCODE = 0
+function net.exe { $script:NetArgs += ,@($args); $global:LASTEXITCODE = 0; if ($args.Count -eq 1 -and $args[0] -eq 'accounts') { 'Minimum password length: 0' } }
+$script:SecCache = $null; $script:Mode = 'Apply'; $script:AssumeYes = $true; $script:EnableLockout = 'yes'; Reset-Results
+Invoke-Passwords
+Assert 'No secedit: the password policy is set with net accounts (history 24, max 90, min 1, length 12, lockout 5/30/30)' {
+    $call = @($script:NetArgs | Where-Object { $_.Count -gt 1 -and $_[0] -eq 'accounts' })[0]
+    "$call" -like '*/uniquepw:24*/maxpwage:90*/minpwage:1*/minpwlen:12*/lockoutthreshold:5*/lockoutduration:30*/lockoutwindow:30*' }
+Assert 'No secedit: complexity is a REVIEW for the human, and there is no FAILED' {
+    @($script:Results | Where-Object { $_.Status -eq 'REVIEW' -and $_.Text -like '*complexity*' }).Count -eq 1 -and -not @($script:Results | Where-Object Status -eq 'FAILED').Count }
+$script:SecCache = $null; Reset-Results; Invoke-UserRights
+Assert 'No secedit: user rights say "could not check" (REVIEW) instead of claiming they look normal' { @($script:Results | Where-Object { $_.Status -eq 'REVIEW' -and $_.Text -like 'Cannot read the user rights*' }).Count -eq 1 -and -not @($script:Results | Where-Object Status -eq 'OK').Count }
+$script:SecCache = $null; Reset-Results; $script:NetArgs = @(); $script:Mode = 'Audit'
+Invoke-Passwords
+Assert 'No secedit, Audit mode: net accounts is only read, never set' { -not @($script:NetArgs | Where-Object { $_.Count -gt 1 }).Count -and @($script:Results | Where-Object Status -eq 'WOULD').Count -eq 1 }
+Remove-Item Function:\net.exe; Remove-Item Function:\secedit.exe
+function secedit.exe { & $secGood @args }
+$script:SecCache = $null; $script:Mode = 'Apply'
+
+
+# Group membership fallback (net localgroup) on a German Windows: the closing line is not a member
+$gm = $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq 'Get-GroupMembers' }, $false)[0].Extent.Text -replace 'function Get-GroupMembers', 'function Get-GroupMembersReal'
+. ([scriptblock]::Create($gm))
+function Get-LocalGroupMember { throw 'Failed to compare two elements in the array (orphaned SID)' }
+function net.exe { @('Aliasname     Administratoren', 'Kommentar', '', 'Mitglieder', '', '-------------------------------------------------------------------------------', 'Administrator', 'PC\alice', ('Der Befehl wurde erfolgreich ausgef' + [char]0xFC + 'hrt.'), '') }
+$gmem = @(Get-GroupMembersReal 'Administratoren')
+Assert 'Group members (net localgroup fallback): members are listed, the localized "command completed" line is not one of them' {
+    $gmem.Count -eq 2 -and $gmem[0].Short -eq 'Administrator' -and $gmem[1].Short -eq 'alice' }
+Remove-Item Function:\net.exe; Remove-Item Function:\Get-LocalGroupMember
+
+
+# RDP left on although the README does not list it: NLA is still required
+$rdpk = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
+$env:SESSIONNAME = 'RDP-Tcp#3'; Reset-Reg; Reset-Results; $script:Critical = @(); $script:AssumeYes = $true; $script:Mode = 'Apply'
+Set-FakeReg $ts 'fDenyTSConnections' 0; Set-FakeReg $rdpk 'UserAuthentication' 0
+Invoke-RemoteAccess
+Assert 'RDP left on (inside an RDP session): Network Level Authentication is switched on' { $script:FakeReg[$rdpk]['UserAuthentication'] -eq 1 }
+$env:SESSIONNAME = 'Console'; Reset-Reg; Reset-Results; Set-FakeReg $ts 'fDenyTSConnections' 0; Invoke-RemoteAccess
+Assert 'RDP turned off from the console: no NLA change is made' { $script:FakeReg[$ts]['fDenyTSConnections'] -eq 1 -and -not (($script:FakeReg[$rdpk]) -and $script:FakeReg[$rdpk].Contains('UserAuthentication')) }
+$env:SESSIONNAME = $savedSession
 
 Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
 [Console]::WriteLine('')

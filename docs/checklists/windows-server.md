@@ -551,7 +551,7 @@ Get-DnsServerResourceRecord -ZoneName corp.local | Format-Table HostName, Record
 ### 9.5 DHCP server
 - [ ] Done
 
-**Script:** ✋ Not done by the script. Do this by hand.
+**Script:** 🔎 If the DHCP Server role is running, the script turns on DHCP audit logging and lists every scope and the router/DNS options (003, 006...) as REVIEW lines; you compare them with the README.
 
 `dhcpmgmt.msc`: check the scopes and reservations against the README, and make sure **Enable DHCP audit logging** is ticked (server → **Properties**). Look at **Scope Options** too: a planted **006 DNS Servers** or **003 Router** pointing at a strange IP sends every client to the attacker.
 
@@ -641,7 +641,7 @@ Don't remove **Desktop Experience** unless the README says the server is headles
 ### 10.3 Media and other prohibited files
 - [ ] Done
 
-**Script:** 🔎 The script searches the common folders for media, archives and password lists and lists them for you.
+**Script:** 🔎 The script searches every folder on the fixed disks (not Windows or Program Files) for media, `.torrent`, password lists and packet captures and lists them for you; it deletes media only if you say yes.
 
 **Typing:**
 ```powershell
@@ -676,7 +676,7 @@ The Sysinternals tools (`psexec`, `procdump`) are legitimate on some images; onl
 ### 11.1 Scheduled tasks
 - [ ] Done
 
-**Script:** 🔎 The script lists tasks that run programs outside `C:\Windows` and offers to disable the obvious ones; read the rest yourself.
+**Script:** 🔎 The script lists every non-Microsoft task and deletes the suspicious ones (asks first; Microsoft's own tasks are only flagged when they run from a user folder); read the rest yourself.
 
 **Typing:**
 ```powershell
@@ -695,7 +695,7 @@ Unregister-ScheduledTask -TaskName 'Updater' -TaskPath '\' -Confirm:$false
 ### 11.2 Services that don't come from Windows
 - [ ] Done
 
-**Script:** 🔎 The script lists services whose binary is outside `C:\Windows` and offers to disable the suspicious ones (asking first).
+**Script:** 🔎 The script lists services whose binary is outside `C:\Windows` and `C:\Program Files`, offers to disable the ones in user folders (asking first), adds quotes to unquoted paths with spaces, and reports service programs or folders that ordinary users can change.
 
 **Typing:**
 ```powershell
@@ -726,7 +726,7 @@ Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' |
 ### 11.4 WMI event subscriptions
 - [ ] Done
 
-**Script:** 🔎 The script lists WMI event filters and consumers; delete any it flags.
+**Script:** 🔎 The script lists WMI command-line and script consumers and offers to remove each one with its filter and binding (asks first); it does not list plain event filters, so run the first command below too.
 
 **What:** A WMI subscription can run a command whenever something happens (a logon, a file change) and is invisible in Task Manager.
 
@@ -744,7 +744,7 @@ Get-CimInstance -Namespace root\subscription -ClassName __EventFilter -Filter "N
 ### 11.5 Hidden and password-less local accounts
 - [ ] Done
 
-**Script:** 🔎 The script lists local accounts that aren't in the README and any autologon setting; it removes them only if you say yes.
+**Script:** 🔎 The script lists local accounts that aren't in the README (it removes them only if you say yes), turns automatic logon off and deletes a stored `DefaultPassword`, and lists accounts hidden from the logon screen (`SpecialAccounts`); the `reg query` for hidden account names is still yours.
 
 **Typing:**
 ```powershell
@@ -757,7 +757,7 @@ reg query "HKLM\SAM\SAM\Domains\Account\Users\Names"        # every account name
 ### 11.6 The hosts file
 - [ ] Done
 
-**Script:** ✅ Done by the script (`security` section).
+**Script:** 🔎 The script comments out every unusual hosts line (asks first; `backdoors` section); if the Scoring Report doesn't give the points, delete those lines completely.
 
 **Typing:**
 ```powershell
@@ -772,7 +772,7 @@ Only comment lines and `127.0.0.1 localhost` are normal. A line pointing a websi
 ### 12.1 Event log size and retention
 - [ ] Done
 
-**Script:** 🔎 The script sets the Security log size and reports logs that were cleared; it does not change the other logs.
+**Script:** 🔎 The script raises the Security, Application, System and PowerShell log sizes and reports a Security or System log that was cleared (events 1102 and 104); it does not look for other emptied logs.
 
 **What:** A cleared or tiny log means no evidence, and a planted script can clear it again. Scoring engines check the log size and that auditing is on.
 
@@ -788,7 +788,7 @@ Get-WinEvent -ListLog * -ErrorAction SilentlyContinue | Where-Object { $_.IsEnab
 ### 12.2 Audit policy is really on
 - [ ] Done
 
-**Script:** 🔎 On a DC the script sets the audit subcategories through `auditpol`; on a member server it follows Windows 10/11 4.1.
+**Script:** 🔎 On every Windows computer the script sets all audit subcategories to Success and Failure through `auditpol` (`audit` section); check the output below for any that a planted GPO turns back off.
 
 **Typing:**
 ```powershell
@@ -802,7 +802,7 @@ auditpol /get /category:* | Select-String 'No Auditing'
 ### 12.3 PowerShell logging
 - [ ] Done
 
-**Script:** ✋ Not done by the script. Do this by hand. It is optional but makes an attack visible.
+**Script:** ✅ Done by the script (`audit` section: script block logging, module logging and command lines in process-creation events).
 
 **Typing:**
 ```powershell
@@ -820,7 +820,7 @@ Every PowerShell block then lands in **Microsoft-Windows-PowerShell/Operational*
 ### 13.1 SMB signing, SMBv1 and NTLM
 - [ ] Done
 
-**Script:** ✅ The script turns SMBv1 off and requires SMB signing (`security` section).
+**Script:** ✅ The script turns SMBv1 off (`features` section, and the `SMB1` registry value in `security`) and requires SMB signing, NTLMv2 only and no LM hashes (`security` section).
 
 **Typing:**
 ```powershell
@@ -833,7 +833,7 @@ Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' | Format-List LmCo
 ### 13.2 LLMNR, NetBIOS and WPAD
 - [ ] Done
 
-**Script:** ✋ Not done by the script. Do this by hand.
+**Script:** 🔎 The script turns off LLMNR, WPAD and NetBIOS over TCP/IP (`misc` section); on a Domain Controller it asks about NetBIOS with default No.
 
 **Why:** LLMNR, NetBIOS name resolution and WPAD let anyone on the network answer "where is that server?" and collect hashes.
 

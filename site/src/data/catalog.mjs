@@ -102,7 +102,7 @@ export const SCRIPTS = [
     config: 'scripts/windows/config.example.psd1',
     worksOn: 'Windows 10 / 11, Windows Server 2016–2022 (Domain Controller aware)',
     language: 'PowerShell 5.1+',
-    tested: 'Logic tests pass (82 checks), but it has not been run on a real Windows image yet. Use Audit mode first.',
+    tested: 'Logic tests pass (155 checks), but it has not been run on a real Windows image yet. Use Audit mode first.',
     testedLevel: 'partial',
     run: 'powershell -ExecutionPolicy Bypass -File .\\Harden.ps1',
   },

@@ -47,7 +47,7 @@ param(
     [switch]$Quick
 )
 
-$ScriptVersion = '2.1.0'
+$ScriptVersion = '2.2.0'
 $script:StartTime = Get-Date
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
@@ -134,6 +134,7 @@ $ReportFile = Join-Path $WorkDir "findings-$RunId.txt"
 New-Item -ItemType Directory -Path $BackupDir -Force | Out-Null
 
 $script:Results = New-Object System.Collections.Generic.List[object]
+$script:Timings = New-Object System.Collections.Generic.List[object]
 $script:CurrentSection = 'setup'
 $script:BackedUpKeys = @{}
 $script:SecCache = $null
@@ -269,33 +270,39 @@ function Remove-RegValue([string]$Path, [string]$Name, [string]$Description) {
 # ---------------------------------------------------------------------------
 function Get-SecPolicy {
     $file = Join-Path $env:TEMP "harden-secpol-$RunId.inf"
-    & secedit.exe /export /cfg $file /quiet 2>&1 | Out-Null
     $policy = @{}
     $section = ''
-    if (-not (Test-Path $file)) { return $policy }
-    foreach ($line in (Get-Content -Path $file)) {
+    # secedit can be missing or blocked (Windows Home, Server Core in odd states): an empty policy means "could not read it"
+    try { Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue; & secedit.exe /export /cfg $file /quiet 2>&1 | Out-Null }
+    catch { Write-HardenLog "secedit is not available: $($_.Exception.Message)"; return $policy }
+    if (-not (Test-Path -LiteralPath $file)) { return $policy }
+    foreach ($line in (Get-Content -LiteralPath $file)) {
         if ($line -match '^\s*\[(.+)\]\s*$') { $section = $Matches[1]; $policy[$section] = [ordered]@{}; continue }
         if ($section -and $line -match '^\s*([^=]+?)\s*=\s*(.*)$') { $policy[$section][$Matches[1]] = $Matches[2].Trim() }
     }
-    Remove-Item $file -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue
     return $policy
 }
 
 # One export per section is enough: the policy only changes when Set-SecPolicy applies something (which refreshes the cache)
 function Get-SecPolicyCached {
-    if (-not $script:SecCache) { $script:SecCache = Get-SecPolicy }
+    if ($null -eq $script:SecCache) { $script:SecCache = Get-SecPolicy }
     return $script:SecCache
 }
 
 function Backup-SecPolicy {
     $file = Join-Path $BackupDir 'secpol-before.inf'
-    if (-not (Test-Path $file)) { & secedit.exe /export /cfg $file /quiet 2>&1 | Out-Null }
+    if (-not (Test-Path -LiteralPath $file)) { try { & secedit.exe /export /cfg $file /quiet 2>&1 | Out-Null } catch { Write-HardenLog "policy backup skipped: $($_.Exception.Message)" } }
 }
 
 # Set-SecPolicy SECTION @{key=value} AREA "description"
 #   Compares wanted values with the current policy and applies only the differences.
 function Set-SecPolicy([string]$Section, [System.Collections.IDictionary]$Wanted, [string]$Area, [string]$Description) {
     $current = Get-SecPolicyCached
+    if ($current.Count -eq 0) {
+        Add-Result 'REVIEW' "Cannot read the local security policy (secedit is missing or blocked, e.g. on Windows Home), so this was NOT checked: $Description"
+        return $false
+    }
     $cur = if ($current.ContainsKey($Section)) { $current[$Section] } else { @{} }
     $diff = [ordered]@{}
     # secedit /export leaves out a right that nobody holds, so "missing" counts as "" (No One)
@@ -315,10 +322,16 @@ function Set-SecPolicy([string]$Section, [System.Collections.IDictionary]$Wanted
     $db  = Join-Path $env:TEMP "harden-apply-$RunId.sdb"
     $lines = @('[Unicode]', 'Unicode=yes', '[Version]', 'signature="$CHICAGO$"', 'Revision=1', "[$Section]")
     foreach ($k in $diff.Keys) { $lines += "$k = $($diff[$k])" }
-    $lines | Out-File -FilePath $inf -Encoding Unicode -Force
-    $out = & secedit.exe /configure /db $db /cfg $inf /areas $Area /quiet 2>&1
-    Write-HardenLog ($out | Out-String)
-    Remove-Item $inf, $db -Force -ErrorAction SilentlyContinue
+    try {
+        $lines | Out-File -FilePath $inf -Encoding Unicode -Force
+        $out = & secedit.exe /configure /db $db /cfg $inf /areas $Area /quiet 2>&1
+        Write-HardenLog ($out | Out-String)
+    } catch {
+        Add-Result 'FAILED' "$Description - secedit could not apply it: $($_.Exception.Message)"
+        return $false
+    } finally {
+        Remove-Item -LiteralPath $inf, $db -Force -ErrorAction SilentlyContinue
+    }
     $script:SecCache = Get-SecPolicy
     $after = $script:SecCache
     $still = @($diff.Keys | Where-Object {
@@ -332,12 +345,22 @@ function Set-SecPolicy([string]$Section, [System.Collections.IDictionary]$Wanted
 # ---------------------------------------------------------------------------
 # System detection
 # ---------------------------------------------------------------------------
-$os = Get-CimInstance Win32_OperatingSystem
-$cs = Get-CimInstance Win32_ComputerSystem
-$script:OsName   = $os.Caption
-$script:IsDC     = ($os.ProductType -eq 2)
-$script:IsServer = ($os.ProductType -ne 1)
-$script:InDomain = [bool]$cs.PartOfDomain
+# ProductType: 1 = workstation, 2 = Domain Controller, 3 = server. If WMI is broken (it happens on practice images) the
+# same fact is in the registry: WinNT / LanmanNT / ServerNT. Never guess "server" from a missing value.
+function Get-ProductType($OsInfo) {
+    $type = 0
+    try { $type = [int]$OsInfo.ProductType } catch { $type = 0 }
+    if ($type -in 1, 2, 3) { return $type }
+    $name = "$(Get-RegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\ProductOptions' 'ProductType')"
+    switch ($name) { 'LanmanNT' { return 2 } 'ServerNT' { return 3 } default { return 1 } }
+}
+
+$script:OsName = "$((Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction SilentlyContinue).ProductName)"
+$os = $null
+try { $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop; if ($os.Caption) { $script:OsName = $os.Caption } } catch { Write-HardenLog "WMI OS info unavailable: $($_.Exception.Message)" }
+$script:ProductType = Get-ProductType $os
+$script:IsDC     = ($script:ProductType -eq 2)
+$script:IsServer = ($script:ProductType -ne 1)
 if ($script:IsDC) { Import-Module ActiveDirectory -ErrorAction SilentlyContinue }
 $script:HasAD = [bool](Get-Command Get-ADUser -ErrorAction SilentlyContinue)
 
@@ -350,20 +373,45 @@ $CpProtectRegex = 'cyberpatriot|\bccs\b|ccsclient|scoring'
 # ---------------------------------------------------------------------------
 # README information
 # ---------------------------------------------------------------------------
+# Names from the README: typed at the prompt ("alice bob" or alice "John Smith") or from the config file, where every
+# array element is ONE name and may contain spaces ('John Smith' is a normal local user name). A DOMAIN\name is
+# reduced to the name, because that is how the rest of the script compares users.
 function Split-Names([object]$Value) {
     if ($null -eq $Value) { return @() }
-    return @(@($Value) -join ' ' -split '[\s,;]+' | Where-Object { $_ } | ForEach-Object { $_.Trim() })
+    $names = @()
+    foreach ($item in @($Value)) {
+        if ($null -eq $item) { continue }
+        $text = "$item".Trim()
+        if (-not $text) { continue }
+        if ($Value -is [array] -and $text -notmatch '[,;]') { $names += $text; continue }
+        foreach ($m in [regex]::Matches($text, '"([^"]+)"|''([^'']+)''|[^\s,;]+')) {
+            $n = if ($m.Groups[1].Success) { $m.Groups[1].Value } elseif ($m.Groups[2].Success) { $m.Groups[2].Value } else { $m.Value }
+            if ($n.Trim()) { $names += $n.Trim() }
+        }
+    }
+    return @($names | ForEach-Object { ($_ -split '\\')[-1] } | Where-Object { $_ })
+}
+
+# 'yes' / 'no' (or 'ask') from whatever the config file holds: 'Yes', $true, 1, 'false' ...
+function ConvertTo-Choice([object]$Value, [string[]]$Allowed, [string]$Default) {
+    $v = "$Value".Trim().ToLower()
+    if ($v -in @('true', '1')) { $v = 'yes' } elseif ($v -in @('false', '0')) { $v = 'no' }
+    if ($v -in $Allowed) { return $v }
+    return $Default
 }
 
 function Import-ReadmeConfig([string]$Path) {
-    if (-not (Test-Path $Path)) { throw "Config file not found: $Path" }
-    $data = Import-PowerShellDataFile -Path $Path
-    $script:AuthAdmins = Split-Names $data.AuthorizedAdmins
-    $script:AuthUsers  = Split-Names $data.AuthorizedUsers
-    $script:Critical   = Split-Names $data.CriticalServices | ForEach-Object { $_.ToLower() }
-    if ($data.ContainsKey('NewPassword'))    { $script:NewPassword = [string]$data.NewPassword }
-    if ($data.ContainsKey('EnableLockout'))  { $script:EnableLockout = ([string]$data.EnableLockout).ToLower() }
-    if ($data.ContainsKey('InstallUpdates')) { $script:InstallUpdates = ([string]$data.InstallUpdates).ToLower() }
+    if (-not (Test-Path -LiteralPath $Path)) { throw "Config file not found: $Path" }
+    # -Path would treat [ ] in a folder name as a wildcard
+    $data = Import-PowerShellDataFile -Path ([WildcardPattern]::Escape($Path))
+    if ($data -isnot [System.Collections.IDictionary]) { throw 'the config file must be a hashtable: @{ AuthorizedAdmins = @(...); ... } (see config.example.psd1)' }
+    $script:AuthAdmins = @(Split-Names $data['AuthorizedAdmins'])
+    $script:AuthUsers  = @(Split-Names $data['AuthorizedUsers'])
+    # service keywords never contain spaces, so a keyword typed as 'remote desktop' is split like a plain list
+    $script:Critical   = @(Split-Names (@($data['CriticalServices']) -join ' ') | ForEach-Object { $_.ToLower() })
+    if ($data.Contains('NewPassword') -and $null -ne $data['NewPassword']) { $script:NewPassword = [string]$data['NewPassword'] }
+    if ($data.Contains('EnableLockout'))  { $script:EnableLockout  = ConvertTo-Choice $data['EnableLockout'] @('yes', 'no') 'yes' }
+    if ($data.Contains('InstallUpdates')) { $script:InstallUpdates = ConvertTo-Choice $data['InstallUpdates'] @('yes', 'no', 'ask') 'ask' }
 }
 
 function Get-CurrentUserNames {
@@ -383,14 +431,16 @@ function Read-ReadmeInfo {
     Write-Host ('Users on this computer now: ' + ((Get-CurrentUserNames) -join ' '))
     Write-Host "You are logged in as: $script:Me (this account is always kept)"
     Write-Host ''
-    $script:AuthAdmins = Split-Names (Read-Host '  Authorized ADMINS (separate with spaces)')
-    $script:AuthUsers  = Split-Names (Read-Host '  Authorized USERS who are NOT admins')
+    # @() matters: one typed name would otherwise come back as a plain string, and "+=" would glue names together
+    $script:AuthAdmins = @(Split-Names (Read-Host '  Authorized ADMINS (separate with spaces; "John Smith" in quotes if a name has a space)'))
+    $script:AuthUsers  = @(Split-Names (Read-Host '  Authorized USERS who are NOT admins'))
     Write-Host '  Critical service keywords this script understands:'
     Write-Host '    rdp iis web ftp smb fileshare dns dhcp ad winrm ssh print sql mysql apache snmp telnet vnc'
-    $script:Critical = Split-Names (Read-Host '  CRITICAL SERVICES (blank if none)') | ForEach-Object { $_.ToLower() }
+    $script:Critical = @(Split-Names (Read-Host '  CRITICAL SERVICES (blank if none)') | ForEach-Object { $_.ToLower() })
 }
 
 function Complete-ReadmeInfo {
+    $script:AuthAdmins = @($script:AuthAdmins); $script:AuthUsers = @($script:AuthUsers); $script:Critical = @($script:Critical)
     if ($script:Me -and ($script:AuthAdmins + $script:AuthUsers) -notcontains $script:Me) { $script:AuthAdmins += $script:Me }
     Write-Host ''
     Write-Host ('  Admins:            ' + $(if ($script:AuthAdmins) { $script:AuthAdmins -join ' ' } else { '(none given)' }))
@@ -464,14 +514,17 @@ function Get-GroupMembers([string]$Group) {
     } catch {
         # Get-LocalGroupMember fails when a group contains a deleted (orphaned) account - fall back to "net localgroup"
         $lines = & net.exe localgroup "$Group" 2>$null
+        $names = @()
         $inList = $false
         foreach ($line in $lines) {
             if ($line -match '^-{5,}') { $inList = $true; continue }
-            if ($line -match '^The command completed') { break }
-            if ($inList -and $line.Trim()) {
-                $full = $line.Trim()
-                $result += [pscustomobject]@{ Short = ($full -split '\\')[-1]; Full = $full; IsLocal = ($full -notmatch '\\' -or $full -like "$env:COMPUTERNAME\*"); Class = 'Unknown'; Sid = '' }
-            }
+            if ($inList -and "$line".Trim()) { $names += "$line".Trim() }
+        }
+        # the last line is "The command completed successfully." in the language of the OS ("Der Befehl wurde erfolgreich ausgefuehrt."),
+        # so it is dropped by position, not by its English text
+        if ($names.Count -gt 0) { $names = @($names | Select-Object -First ($names.Count - 1)) }
+        foreach ($full in $names) {
+            $result += [pscustomobject]@{ Short = ($full -split '\\')[-1]; Full = $full; IsLocal = ($full -notmatch '\\' -or $full -like "$env:COMPUTERNAME\*"); Class = 'Unknown'; Sid = '' }
         }
         return $result
     }
@@ -526,7 +579,8 @@ function Invoke-Users {
 
     Write-Info 'Built-in accounts (Guest, DefaultAccount, Administrator)'
     Write-Why 'The Guest account needs no password. Attackers love it.'
-    foreach ($u in @(Get-LocalUser)) {
+    $all = @(Get-LocalUser)   # fresh list: accounts may have been created or enabled above
+    foreach ($u in $all) {
         $rid = ($u.SID.Value -split '-')[-1]
         if ($rid -in @('501', '503', '504')) {
             if ($u.Enabled) {
@@ -560,7 +614,7 @@ function Invoke-Users {
         }
     }
     foreach ($a in $script:AuthAdmins) {
-        if (-not (Get-LocalUser -Name $a -ErrorAction SilentlyContinue)) { continue }
+        if (@($all.Name) -notcontains $a) { continue }
         if (@($admins.Short) -contains $a) { Add-Result 'OK' "$a is an Administrator"; continue }
         Add-Result 'REVIEW' "Authorized admin '$a' is not in the Administrators group"
         if (Confirm-Step "Add '$a' to Administrators?" 'y') { $who = $a; Invoke-Fix "Added $who to Administrators" { Add-LocalGroupMember -Group $adminGroup -Member $who -ErrorAction Stop } | Out-Null }
@@ -590,7 +644,8 @@ function Invoke-Users {
 
     Write-Info 'Password settings on each account'
     Write-Why '"Password never expires" and "password not required" are weak settings planted on many images.'
-    foreach ($u in @(Get-LocalUser | Where-Object { $_.Enabled })) {
+    $all = @(Get-LocalUser)   # the built-in accounts may have just been disabled
+    foreach ($u in @($all | Where-Object { $_.Enabled })) {
         $n = $u.Name
         if ($u.PasswordNeverExpires) { Invoke-Fix "$n - password will now expire" { Set-LocalUser -Name $n -PasswordNeverExpires $false -ErrorAction Stop } | Out-Null }
         if (-not $u.UserMayChangePassword) { Invoke-Fix "$n - may now change their own password" { Set-LocalUser -Name $n -UserMayChangePassword $true -ErrorAction Stop } | Out-Null }
@@ -599,7 +654,7 @@ function Invoke-Users {
 
     Write-Info 'Setting strong passwords for the other users'
     Write-Why "Planted users often have weak passwords like 'Password1'."
-    $targets = @($script:AuthAdmins + $script:AuthUsers | Select-Object -Unique | Where-Object { $_ -ne $script:Me -and (Get-LocalUser -Name $_ -ErrorAction SilentlyContinue) })
+    $targets = @($script:AuthAdmins + $script:AuthUsers | Select-Object -Unique | Where-Object { $_ -ne $script:Me -and (@($all.Name) -contains $_) })
     if ($targets.Count -eq 0) { Add-Result 'SKIPPED' 'No other authorized users to set passwords for'; return }
     if ($script:Mode -eq 'Audit') { Add-Result 'REVIEW' "Make sure these users have strong passwords (Apply mode can set them): $($targets -join ' ')"; return }
     $pw = Get-NewPasswordPlain
@@ -710,8 +765,27 @@ function Invoke-Passwords {
         $wanted['ResetLockoutCount'] = 30
         $wanted['LockoutDuration'] = 30
     }
-    Set-SecPolicy 'System Access' $wanted 'SECURITYPOLICY' 'Local password and lockout policy' | Out-Null
+    if ((Get-SecPolicyCached).Count -eq 0) { Set-PasswordPolicyWithNetAccounts $wanted }
+    else { Set-SecPolicy 'System Access' $wanted 'SECURITYPOLICY' 'Local password and lockout policy' | Out-Null }
     if ($script:IsDC) { Update-DomainPasswordPolicy $wanted }
+}
+
+# Windows Home (and a broken secedit) cannot export or import the security policy, but "net accounts" still sets the
+# numbers. Complexity and reversible encryption have no net accounts switch, so those are reported for a human.
+function Set-PasswordPolicyWithNetAccounts([System.Collections.IDictionary]$Wanted) {
+    Write-Info 'secedit is not available - using "net accounts" for the password and lockout numbers'
+    $args2 = @('/uniquepw:24', '/maxpwage:90', '/minpwage:1', '/minpwlen:12')
+    if ($Wanted.Contains('LockoutBadCount')) { $args2 += @('/lockoutthreshold:5', '/lockoutduration:30', '/lockoutwindow:30') }
+    $shown = (& net.exe accounts 2>$null) -join "`n"
+    if ($shown -match '(?m):\s*24\s*$' -and $shown -match '(?m):\s*90\s*$' -and $shown -match '(?m):\s*12\s*$') {
+        Add-Result 'OK' 'Password length, age and history already match (checked with net accounts)'
+    } else {
+        Invoke-Fix 'Password and lockout numbers (net accounts: history 24, max age 90, min age 1, length 12, lockout 5/30/30)' {
+            & net.exe accounts @args2 | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "net accounts exit code $LASTEXITCODE" }
+        } | Out-Null
+    }
+    Add-Result 'REVIEW' 'Set "Password must meet complexity requirements" and "Store passwords using reversible encryption" by hand (no secpol.msc on Home: see the checklist)'
 }
 
 function Update-DomainPasswordPolicy([System.Collections.IDictionary]$Wanted) {
@@ -796,6 +870,12 @@ function Invoke-SecurityOptions {
     Set-Reg $sys 'EnableInstallerDetection' 1 'DWord' 'UAC: detect installers and ask for elevation'
     Set-Reg $sys 'EnableSecureUIAPaths' 1 'DWord' 'UAC: only elevate UIAccess apps from secure folders'
     Set-Reg $sys 'EnableVirtualization' 1 'DWord' 'UAC: virtualize file and registry write failures'
+    # 1 lets every local administrator log on over the network with a full token (pass-the-hash); Windows' default is "not set".
+    # Only a planted 1 is changed, and not when the README needs remote PowerShell / WinRM.
+    if ((Get-RegValue $sys 'LocalAccountTokenFilterPolicy') -eq 1) {
+        if (Test-Critical @('winrm', 'remoting', 'powershell-remoting')) { Add-Result 'REVIEW' 'LocalAccountTokenFilterPolicy = 1 (remote UAC off) is kept because the README lists WinRM; check it is really needed' }
+        else { Set-Reg $sys 'LocalAccountTokenFilterPolicy' 0 'DWord' 'UAC: local administrators get a filtered token over the network' }
+    }
 
     Write-Info 'Logon screen'
     Write-Why "Don't show who logged in last, require Ctrl+Alt+Del, and lock idle computers."
@@ -812,7 +892,12 @@ function Invoke-SecurityOptions {
     $wl = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
     Set-Reg $wl 'AutoAdminLogon' '0' 'String' 'Automatic logon is off'
     Remove-RegValue $wl 'DefaultPassword' 'No password stored in the registry for automatic logon'
-    if (-not $script:IsDC) { Set-Reg $wl 'CachedLogonsCount' '4' 'String' 'Remember at most 4 cached domain logons' }
+    # "4 or fewer": a lower value (0 is the safest) is already fine, so it is never raised to 4
+    if (-not $script:IsDC) {
+        $cached = "$(Get-RegValue $wl 'CachedLogonsCount')"
+        if ($cached -match '^\d+$' -and [int]$cached -le 4) { Add-Result 'OK' "Remember at most 4 cached domain logons (now $cached)" }
+        else { Set-Reg $wl 'CachedLogonsCount' '4' 'String' 'Remember at most 4 cached domain logons' }
+    }
 
     Write-Info 'Network authentication and anonymous access'
     Write-Why 'Stops anonymous users listing accounts and shares, and blocks old, crackable password hashes (LM/NTLMv1).'
@@ -839,6 +924,7 @@ function Invoke-SecurityOptions {
     Set-Reg $srv 'RequireSecuritySignature' 1 'DWord' 'SMB server: always sign'
     Set-Reg $srv 'EnableSecuritySignature' 1 'DWord' 'SMB server: sign if the client agrees'
     Set-Reg $srv 'RestrictNullSessAccess' 1 'DWord' 'SMB server: no anonymous (null session) access'
+    Set-Reg $srv 'SMB1' 0 'DWord' 'SMB server: SMBv1 protocol off (registry, also works where Get-SmbServerConfiguration is missing)'
     Set-Reg $srv 'EnableForcedLogOff' 1 'DWord' 'SMB server: disconnect users when logon hours expire'
     Set-Reg $srv 'autodisconnect' 15 'DWord' 'SMB server: disconnect idle sessions after 15 minutes'
     if (-not $script:IsDC) {
@@ -893,6 +979,7 @@ function Invoke-UserRights {
     Write-Why "Rights like 'Debug programs' given to Everyone or a normal user let them take over the computer."
     if ($script:IsDC) { Add-Result 'REVIEW' 'On a Domain Controller, user rights also come from the Default Domain Controllers Policy - check it in Group Policy Management' }
     $policy = Get-SecPolicyCached
+    if ($policy.Count -eq 0) { Add-Result 'REVIEW' 'Cannot read the user rights (secedit is missing or blocked, e.g. on Windows Home), so they were NOT checked - look at them by hand (checklist 4.2)'; return }
     $pr = if ($policy.ContainsKey('Privilege Rights')) { $policy['Privilege Rights'] } else { @{} }
     $badPrincipals = @('*S-1-1-0', '*S-1-5-32-545', '*S-1-5-32-546', '*S-1-5-11', '*S-1-5-7', '*S-1-5-4', '*S-1-5-32-547')
     $dangerous = @('SeTcbPrivilege', 'SeDebugPrivilege', 'SeTakeOwnershipPrivilege', 'SeLoadDriverPrivilege', 'SeBackupPrivilege', 'SeRestorePrivilege',
@@ -964,6 +1051,18 @@ function Get-AuditPolicyRows {
     } catch { Write-HardenLog "skipped: $($_.Exception.Message)"; return @() }
 }
 
+# Event 1102 (Security) and 104 (System) are written when someone clears a log. Newest one only, so a quiet log is cheap to read.
+function Get-LogClearedEvents {
+    $found = @()
+    foreach ($spec in @(@('Security', 1102), @('System', 104))) {
+        try {
+            $ev = @(Get-WinEvent -FilterHashtable @{ LogName = $spec[0]; Id = $spec[1] } -MaxEvents 1 -ErrorAction Stop)
+            if ($ev.Count -gt 0) { $found += [pscustomobject]@{ Log = $spec[0]; Id = $spec[1]; Time = $ev[0].TimeCreated } }
+        } catch { Write-HardenLog "no $($spec[0]) clear event: $($_.Exception.Message)" }
+    }
+    return $found
+}
+
 function Invoke-AuditPolicy {
     Write-Info 'Audit policy (what Windows writes to the Security event log)'
     Write-Why 'Without auditing there is no record of logins, account changes or policy changes.'
@@ -992,6 +1091,7 @@ function Invoke-AuditPolicy {
         $l = $log; $bytes = $sizes[$log]
         Invoke-Fix ("{0} log size -> {1} MB (was {2} MB)" -f $l, [int]($bytes / 1MB), [int]($info.MaximumSizeInBytes / 1MB)) { & wevtutil.exe sl $l "/ms:$bytes"; if ($LASTEXITCODE -ne 0) { throw "wevtutil exit $LASTEXITCODE" } } | Out-Null
     }
+    foreach ($c in @(Get-LogClearedEvents)) { Add-Result 'REVIEW' "The $($c.Log) event log was cleared (event $($c.Id)) on $($c.Time) - someone may have hidden something; forensics questions may need that log" }
     $svc = Get-Service -Name EventLog -ErrorAction SilentlyContinue
     if ($svc -and $svc.Status -eq 'Running') { Add-Result 'OK' 'Windows Event Log service is running' }
     else { Invoke-Fix 'Start the Windows Event Log service' { Set-Service EventLog -StartupType Automatic; Start-Service EventLog -ErrorAction Stop } | Out-Null }
@@ -1007,6 +1107,14 @@ function Invoke-AuditPolicy {
 # ===========================================================================
 # SECTION: Microsoft Defender
 # ===========================================================================
+# Windows desktops (not Server) list every registered antivirus in Security Center. Server has no such class.
+function Get-ThirdPartyAntivirus {
+    try {
+        return @(Get-CimInstance -Namespace 'root\SecurityCenter2' -ClassName AntiVirusProduct -ErrorAction Stop |
+                 Where-Object { $_.displayName -and $_.displayName -notmatch 'Windows Defender|Microsoft Defender' } | ForEach-Object { "$($_.displayName)" })
+    } catch { return @() }
+}
+
 function Invoke-Defender {
     Write-Info 'Microsoft Defender antivirus'
     Write-Why 'Defender finds and removes malware. Attackers turn it off or add "exclusions" so it ignores their files.'
@@ -1026,6 +1134,13 @@ function Invoke-Defender {
             }
         }
     }
+    # The same switches also exist outside the policy keys; a value of 1 there turns Defender off too
+    $mdKey = 'HKLM:\SOFTWARE\Microsoft\Windows Defender'
+    foreach ($spec in @(@($mdKey, 'DisableAntiSpyware'), @($mdKey, 'DisableAntiVirus'), @("$mdKey\Real-Time Protection", 'DisableRealtimeMonitoring'), @("$mdKey\Real-Time Protection", 'DisableBehaviorMonitoring'))) {
+        if ("$(Get-RegValue $spec[0] $spec[1])" -eq '1') { Remove-RegValue $spec[0] $spec[1] "Defender is not switched off in the registry ($($spec[1]))" }
+    }
+    $other = @(Get-ThirdPartyAntivirus)
+    if ($other.Count -gt 0) { Add-Result 'REVIEW' "Another antivirus is registered ($($other -join ', ')): Defender may run in passive mode, so its settings below may not be what the Scoring Report checks. Keep it if the README needs it." }
     $svc = Get-Service -Name WinDefend -ErrorAction SilentlyContinue
     if (-not $svc) {
         Add-Result 'REVIEW' 'Microsoft Defender is not installed on this computer'
@@ -1065,6 +1180,8 @@ function Invoke-Defender {
     if ($exclusions.Count -eq 0) { Add-Result 'OK' 'No Defender exclusions' }
     foreach ($ex in $exclusions) {
         Add-Result 'REVIEW' "Defender ignores $($ex.Type): $($ex.Value)"
+        # the competition client may be excluded on purpose; removing that could make it stop working
+        if ("$($ex.Value)" -match $CpProtectRegex) { Add-Result 'OK' "Keeping the exclusion $($ex.Value) (CyberPatriot scoring software)"; continue }
         if (Confirm-Step "Remove this exclusion?" 'y') {
             $t = $ex.Type; $v = $ex.Value
             Invoke-Fix "Removed Defender exclusion $t $v" {
@@ -1147,9 +1264,18 @@ function Invoke-Firewall {
     Write-Info 'Custom inbound "allow" rules (an attacker may have opened a port)'
     $custom = @(Get-NetFirewallRule -Direction Inbound -Action Allow -Enabled True -ErrorAction SilentlyContinue | Where-Object { -not $_.DisplayGroup -and $_.DisplayName -notmatch $CpProtectRegex })
     if ($custom.Count -eq 0) { Add-Result 'OK' 'No custom inbound allow rules' }
+    # Piping each rule into Get-NetFirewallApplicationFilter / PortFilter is one slow WMI call per rule (minutes with
+    # 100+ rules); two bulk queries indexed by rule ID give the same answer in seconds. A rule missing from the index
+    # (an ID that does not match) still falls back to the per-rule call.
+    $appIndex = @{}; $portIndex = @{}
+    if ($custom.Count -gt 2) {
+        foreach ($f in @(Get-NetFirewallApplicationFilter -All -ErrorAction SilentlyContinue)) { $appIndex["$($f.InstanceID)"] = $f }
+        foreach ($f in @(Get-NetFirewallPortFilter -All -ErrorAction SilentlyContinue)) { $portIndex["$($f.InstanceID)"] = $f }
+    }
     foreach ($r in $custom) {
-        $app = ($r | Get-NetFirewallApplicationFilter -ErrorAction SilentlyContinue).Program
-        $port = ($r | Get-NetFirewallPortFilter -ErrorAction SilentlyContinue)
+        $af = $appIndex["$($r.InstanceID)"]; if (-not $af) { $af = $appIndex["$($r.Name)"] }; if (-not $af) { $af = ($r | Get-NetFirewallApplicationFilter -ErrorAction SilentlyContinue) }
+        $port = $portIndex["$($r.InstanceID)"]; if (-not $port) { $port = $portIndex["$($r.Name)"] }; if (-not $port) { $port = ($r | Get-NetFirewallPortFilter -ErrorAction SilentlyContinue) }
+        $app = $af.Program
         $desc = "'$($r.DisplayName)' program=$app port=$($port.LocalPort)/$($port.Protocol)"
         $suspicious = ($app -match '\\(Users|Temp|ProgramData|PerfLogs)\\|\\(nc|ncat|netcat|nc64)\.exe$') -or ("$($port.LocalPort)" -match '^(4444|1337|31337|6666|6667|12345|5554|9999)$') -or ("$($port.LocalPort)" -eq 'Any' -and $app -eq 'Any')
         if ($suspicious) {
@@ -1219,16 +1345,34 @@ $CoreServices = @(
     @{ Name = 'CryptSvc';  Label = 'Cryptographic Services'; Start = 'Automatic' }
 )
 
+# Some services (Windows Firewall, Defender) refuse Set-Service ("Access is denied") although their Start value in the
+# registry can be edited; the SCM only reads it again at the next boot.
+function Set-ServiceStartMode([string]$Name, [string]$Mode) {
+    try { Set-Service -Name $Name -StartupType $Mode -ErrorAction Stop }
+    catch {
+        $first = $_
+        $value = switch ($Mode) { 'Automatic' { 2 } 'Manual' { 3 } 'Disabled' { 4 } default { 3 } }
+        $key = "HKLM:\SYSTEM\CurrentControlSet\Services\$Name"
+        if (-not (Test-Path -LiteralPath $key)) { throw $first }
+        Backup-RegKey $key
+        Set-ItemProperty -LiteralPath $key -Name Start -Value $value -Type DWord -ErrorAction Stop
+        Write-Warn "${Name}: Set-Service was refused, so the Start value was changed in the registry; it applies after the next restart."
+    }
+}
+
 function Disable-ServiceNow([string]$Name) {
     Stop-Service -Name $Name -Force -ErrorAction SilentlyContinue
-    Set-Service -Name $Name -StartupType Disabled -ErrorAction Stop
+    Set-ServiceStartMode $Name 'Disabled'
 }
 
 function Invoke-Services {
     Write-Info 'Checking services against the README'
     Write-Why 'Every running service is something an attacker can try to break into. Keep only what the README needs.'
+    # one query instead of ~50 (Get-Service -Name per entry); the table is case-insensitive like service names are
+    $installed = @{}
+    foreach ($x in @(Get-Service -ErrorAction SilentlyContinue)) { $installed["$($x.Name)"] = $x }
     foreach ($entry in $ServiceCatalog) {
-        $svc = Get-Service -Name $entry.Name -ErrorAction SilentlyContinue
+        $svc = $installed[$entry.Name]
         if (-not $svc) { continue }
         if ($script:IsDC -and $DcProtectedServices -contains $svc.Name) { continue }
         $label = "$($entry.Label) ($($svc.Name))"
@@ -1259,11 +1403,11 @@ function Invoke-Services {
 
     Write-Info 'Security services that must be running'
     foreach ($c in $CoreServices) {
-        $svc = Get-Service -Name $c.Name -ErrorAction SilentlyContinue
+        $svc = $installed[$c.Name]
         if (-not $svc) { continue }
         $n = $c.Name; $start = $c.Start
         if ($svc.StartType -eq 'Disabled') {
-            Invoke-Fix "Re-enable $($c.Label) (it was disabled)" { Set-Service -Name $n -StartupType $start -ErrorAction Stop; if ($start -eq 'Automatic') { Start-Service -Name $n -ErrorAction SilentlyContinue } } | Out-Null
+            Invoke-Fix "Re-enable $($c.Label) (it was disabled)" { Set-ServiceStartMode $n $start; if ($start -eq 'Automatic') { Start-Service -Name $n -ErrorAction SilentlyContinue } } | Out-Null
         } elseif ($start -eq 'Automatic' -and $svc.Status -ne 'Running') {
             Invoke-Fix "Start $($c.Label)" { Start-Service -Name $n -ErrorAction Stop } | Out-Null
         } else { Add-Result 'OK' "$($c.Label) is enabled" }
@@ -1362,6 +1506,8 @@ function Invoke-RemoteAccess {
                 Invoke-Fix 'Disable the Remote Desktop firewall rules' { Disable-NetFirewallRule -Name 'RemoteDesktop-*' -ErrorAction Stop } | Out-Null
             }
         } else { Add-Result 'OK' 'Remote Desktop is off' }
+        # Still on (README missed it, or you answered no): at least require Network Level Authentication
+        if ((Get-RegValue $ts 'fDenyTSConnections') -ne 1) { Set-Reg $rdpTcp 'UserAuthentication' 1 'DWord' 'Remote Desktop (left on) requires Network Level Authentication' }
     }
     Write-Info 'Remote Assistance'
     Write-Why 'Remote Assistance lets someone take control of the screen when invited.'
@@ -1493,20 +1639,32 @@ function Get-SearchRoots {
     $skip = @('Windows', 'Program Files', 'Program Files (x86)', 'ProgramData', 'Users', '$Recycle.Bin', 'System Volume Information', 'Recovery',
               'PerfLogs', 'Config.Msi', 'Documents and Settings', 'harden-toolkit', '$WinREAgent', '$SysReset', '$Windows.~BT', '$Windows.~WS', 'OneDriveTemp', 'MSOCache', 'Boot')
     $roots = @("$env:SystemDrive\Users")
-    $roots += @(Get-ChildItem "$env:SystemDrive\" -Directory -Force -ErrorAction SilentlyContinue | Where-Object { $skip -notcontains $_.Name -and $_.Name -notmatch $CpProtectRegex } | ForEach-Object { $_.FullName })
+    $drives = @("$env:SystemDrive\")
+    # a second hard disk (D:\ with a "Media" or "Share" folder) is part of the image too; USB sticks and CD drives are not
+    try { $drives += @([System.IO.DriveInfo]::GetDrives() | Where-Object { $_.DriveType -eq 'Fixed' -and $_.IsReady -and $_.RootDirectory.FullName -ne "$env:SystemDrive\" } | ForEach-Object { $_.RootDirectory.FullName }) } catch { Write-HardenLog "drive list: $($_.Exception.Message)" }
+    foreach ($d in $drives) {
+        $roots += @(Get-ChildItem $d -Directory -Force -ErrorAction SilentlyContinue | Where-Object { $skip -notcontains $_.Name -and $_.Name -notmatch $CpProtectRegex } | ForEach-Object { $_.FullName })
+    }
     return $roots
 }
 
 # One walk over the disk (instead of one Get-ChildItem -Recurse per root): skips junctions/symlinks (no loops, no
-# "Application Data" access-denied noise) and whole folders that cannot hold anything interesting.
-function Get-FilesOnePass([string[]]$Roots, [string]$SkipDirRegex) {
+# "Application Data" access-denied noise) and whole folders that cannot hold anything interesting. With -Extensions only
+# files with those extensions are handed on: a whole disk is ~500,000 files and keeping every FileInfo object in memory
+# is what makes a naive scan slow and hungry.
+function Get-FilesOnePass([string[]]$Roots, [string]$SkipDirRegex, [string[]]$Extensions) {
     $stack = New-Object System.Collections.Generic.Stack[string]
+    $wanted = $null
+    if ($Extensions) {
+        $wanted = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+        foreach ($e in $Extensions) { [void]$wanted.Add($e) }
+    }
     foreach ($r in $Roots) { if ($r -and (Test-Path -LiteralPath $r)) { $stack.Push($r) } }
     while ($stack.Count -gt 0) {
         $dir = $stack.Pop()
         try {
             $di = New-Object System.IO.DirectoryInfo $dir
-            foreach ($f in $di.GetFiles()) { $f }
+            foreach ($f in $di.GetFiles()) { if (-not $wanted -or $wanted.Contains($f.Extension)) { $f } }
             foreach ($d in $di.GetDirectories()) {
                 if (($d.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
                 if ($SkipDirRegex -and (($d.FullName + '\') -match $SkipDirRegex)) { continue }
@@ -1516,9 +1674,21 @@ function Get-FilesOnePass([string[]]$Roots, [string]$SkipDirRegex) {
     }
 }
 
+# Hacking-tool file names. Anchored and specific: "john*" or "miner*" would also catch john_smith_taxes.zip and
+# determiner.zip, and with -Yes those would be deleted.
+function Test-ToolFileName([string]$Name) {
+    return ($Name -match '(?i)^(nc|nc64|ncat|netcat|nmap|zenmap|mimikatz.*|pwdump.*|fgdump.*|wce|procdump(64)?|psexec(64)?|lazagne.*|rubeus.*|sharphound.*|bloodhound.*|john|john64|john-the-ripper.*|johntheripper.*|john-\d.*|hashcat.*|hydra|hydra64|xhydra|hydra-.*|thc-hydra.*|cain|cain-?(and-?|&-?)?abel.*|keylog.*|.*backdoor.*|.*rootkit.*|xmrig.*|(cpu|gpu|bfg|cg|eth)miner.*|minerd|nicehash.*)\.(exe|ps1|bat|py|zip|7z)$')
+}
+
 # Deletes each path literally: names like "song [remix].mp3" are not wildcards
+# One locked or protected file must not stop the other 200 deletions: every file is tried, then the failures are reported.
 function Remove-FileList([string[]]$Paths) {
-    foreach ($p in $Paths) { Remove-Item -LiteralPath $p -Force -ErrorAction Stop }
+    $failed = @()
+    foreach ($p in $Paths) {
+        try { Remove-Item -LiteralPath $p -Force -ErrorAction Stop }
+        catch { $failed += "$p ($($_.Exception.Message))" }
+    }
+    if ($failed.Count -gt 0) { throw ("{0} of {1} file(s) could not be deleted (the rest were): {2}" -f $failed.Count, @($Paths).Count, (($failed | Select-Object -First 3) -join '; ')) }
 }
 
 function Invoke-Files {
@@ -1526,22 +1696,31 @@ function Invoke-Files {
     Write-Why 'Company policy on CyberPatriot images usually bans personal media and hacking tools. Each one removed is often worth points.'
     Write-Warn 'Answer the FORENSICS QUESTIONS first - they sometimes ask about these files!'
     $media = @('.mp3', '.mp4', '.m4a', '.m4v', '.wav', '.wma', '.wmv', '.flac', '.aac', '.ogg', '.avi', '.mkv', '.mov', '.flv', '.mpg', '.mpeg', '.webm', '.3gp', '.aiff', '.mid', '.torrent')
+    $toolExt = @('.exe', '.ps1', '.bat', '.py', '.zip', '.7z')
+    $dataExt = @('.txt', '.csv', '.xls', '.xlsx', '.doc', '.docx', '.pcapng', '.pcap', '.cap', '.kdbx', '.lst')
+    $oddExt = @('.exe', '.bat', '.cmd', '.ps1', '.vbs', '.scr', '.hta')
     $skipDir = '(?i)\\AppData\\Local\\(Microsoft|Packages)\\|\\AppData\\Roaming\\Microsoft\\(Windows\\Recent|Teams)\\|\\harden-toolkit\\'
     $skipPath = '(?i)\\AppData\\Local\\(Microsoft|Packages)\\|\\AppData\\Roaming\\Microsoft\\(Windows\\Recent|Teams)|cyberpatriot|\\harden-toolkit\\'
-    $toolRegex = '(?i)^(nc|nc64|ncat|netcat|nmap|zenmap|mimikatz.*|pwdump.*|fgdump.*|wce|procdump(64)?|psexec(64)?|lazagne.*|rubeus.*|sharphound.*|bloodhound.*|john.*|hashcat.*|hydra.*|cain.*|keylog.*|.*backdoor.*|.*rootkit.*|xmrig.*|.*miner.*)\.(exe|ps1|bat|py|zip|7z)$'
+    # programs that have no business in these places (installers live in Program Files, not in Public or a bare C:\Temp)
+    $oddPlace = '(?i)^[A-Z]:\\(Users\\Public|Temp|tmp|Windows\\Temp)\\'
     $dataRegex = '(?i)(\.pcapng?$|\.cap$|password|passwd|creditcard|credit_card|\bssn\b|\.kdbx$|rockyou|wordlist|hashes)'
     $mediaFiles = New-Object System.Collections.Generic.List[string]; $tools = New-Object System.Collections.Generic.List[string]; $data = New-Object System.Collections.Generic.List[string]
-    foreach ($f in (Get-FilesOnePass (Get-SearchRoots) $skipDir)) {
+    $odd = New-Object System.Collections.Generic.List[string]
+    $ext = @($media + $toolExt + $dataExt + $oddExt | Select-Object -Unique)
+    foreach ($f in (Get-FilesOnePass (Get-SearchRoots) $skipDir $ext)) {
         if ($f.FullName -match $skipPath) { continue }
-        if ($media -contains $f.Extension.ToLower()) { $mediaFiles.Add($f.FullName) }
-        elseif ($f.Name -match $toolRegex) { $tools.Add($f.FullName) }
-        elseif ($f.Name -match $dataRegex -and $f.Extension -match '(?i)^\.(txt|csv|xlsx?|docx?|pcapng|pcap|cap|kdbx|lst)$') { $data.Add($f.FullName) }
+        $e = $f.Extension.ToLower()
+        if ($media -contains $e) { $mediaFiles.Add($f.FullName) }
+        elseif (Test-ToolFileName $f.Name) { $tools.Add($f.FullName) }
+        elseif ($f.Name -match $dataRegex -and $dataExt -contains $e) { $data.Add($f.FullName) }
+        elseif ($oddExt -contains $e -and $f.FullName -match $oddPlace) { $odd.Add($f.FullName) }
     }
     foreach ($f in @(Get-ChildItem "$env:SystemDrive\" -File -Force -ErrorAction SilentlyContinue)) {
         if ($media -contains $f.Extension.ToLower()) { $mediaFiles.Add($f.FullName) }
     }
-    foreach ($f in (Get-FilesOnePass @("$env:SystemRoot\Temp") $null)) {
-        if ($f.Name -match $toolRegex) { $tools.Add($f.FullName) }
+    foreach ($f in (Get-FilesOnePass @("$env:SystemRoot\Temp") $null ($toolExt + $oddExt))) {
+        if (Test-ToolFileName $f.Name) { $tools.Add($f.FullName) }
+        elseif ($oddExt -contains $f.Extension.ToLower() -and $f.FullName -notmatch '(?i)\\(MpCmdRun|MpSigStub)') { $odd.Add($f.FullName) }
     }
     if ($mediaFiles.Count -eq 0) { Add-Result 'OK' 'No media files found' }
     else {
@@ -1559,6 +1738,15 @@ function Invoke-Files {
         if (Confirm-Step "Delete these $($tools.Count) file(s)?" 'y') {
             $list = $tools
             Invoke-Fix "Deleted $($list.Count) hacking tool files" { Remove-FileList $list } | Out-Null
+        }
+    }
+    if ($odd.Count -eq 0) { Add-Result 'OK' 'No programs or scripts in Public, C:\Temp or Windows\Temp' }
+    else {
+        Add-Result 'REVIEW' "Found $($odd.Count) program/script file(s) in Public, C:\Temp or Windows\Temp - open each one before deleting (some installers leave files there)"
+        Show-List $odd 20
+        if (Confirm-Step "Delete these $($odd.Count) file(s)? (only if you have checked them)" 'n' -Strict) {
+            $list = $odd
+            Invoke-Fix "Deleted $($list.Count) odd program/script files" { Remove-FileList $list } | Out-Null
         }
     }
     if ($data.Count -eq 0) { Add-Result 'OK' 'No password lists or packet captures found' }
@@ -1590,230 +1778,351 @@ function Test-SuspiciousTask([string]$TaskPath, [string]$Actions) {
     return (-not $systemOwned)
 }
 
+# A hosts line is normal when it is blank, a comment, or exactly "127.0.0.1 localhost" / "::1 localhost" (optionally followed by a # comment)
+function Test-HostsLineSuspicious([string]$Line) {
+    $l = "$Line".Trim()
+    if (-not $l -or $l.StartsWith('#')) { return $false }
+    $l = ($l -replace '\s*#.*$', '').Trim()
+    if ($l -match '^(127\.0\.0\.1|::1)\s+localhost$') { return $false }
+    return $true
+}
+
+# Where a service program lives decides what we say about it. Win32_Service.PathName is already expanded
+# (C:\WINDOWS\system32\svchost.exe -k netsvcs); drivers and svchost groups are normal, a program in a user folder is not.
+#   Kind: trusted (Windows, Program Files, Defender's platform folder) | suspicious | unusual | none
+#   Unquoted: the program path has a space and no quotes (privilege escalation: C:\Program.exe is tried first)
+function Get-ServicePathVerdict([string]$Path) {
+    $result = [pscustomobject]@{ Kind = 'none'; Unquoted = $false; Exe = ''; Rest = '' }
+    $p = "$Path".Trim()
+    if (-not $p) { return $result }
+    if ($p.StartsWith('"')) {
+        $end = $p.IndexOf('"', 1)
+        if ($end -lt 1) { $end = $p.Length - 1 }
+        $result.Exe = $p.Substring(1, $end - 1); $result.Rest = $p.Substring([Math]::Min($end + 1, $p.Length))
+    } else {
+        $m = [regex]::Match($p, '(?i)^.*?\.(exe|com|bat|cmd|sys)(?=\s|$)')
+        if ($m.Success) { $result.Exe = $m.Value; $result.Rest = $p.Substring($m.Length) }
+        else { $parts = $p -split '\s+', 2; $result.Exe = $parts[0]; $result.Rest = $(if ($parts.Count -gt 1) { ' ' + $parts[1] } else { '' }) }
+        $result.Unquoted = ($result.Exe -match '\s' -and $result.Exe -match '^[A-Za-z]:\\')
+    }
+    $trusted = ($result.Exe -match '(?i)^[A-Z]:\\Windows\\' -or $result.Exe -match '(?i)^[A-Z]:\\Program Files( \(x86\))?\\' -or
+                $result.Exe -match '(?i)^[A-Z]:\\ProgramData\\Microsoft\\(Windows Defender|Windows Defender Advanced Threat Protection|Windows Security Health)\\')
+    # cmd /c ... , powershell -enc ... or mshta as a service "program" is how sc create backdoors are written
+    $shellHost = ($result.Exe -match '(?i)\\(cmd|powershell|pwsh|mshta|wscript|cscript|rundll32|regsvr32)\.exe$' -and "$($result.Rest)".Trim())
+    if ($shellHost -or (-not $trusted -and (($result.Exe + $result.Rest) -match $SuspiciousCmdRegex))) { $result.Kind = 'suspicious' }
+    elseif ($trusted) { $result.Kind = 'trusted' }
+    elseif ($result.Exe -match '(?i)\\(Users|ProgramData|Temp)\\') { $result.Kind = 'suspicious' }
+    else { $result.Kind = 'unusual' }
+    return $result
+}
+
+# Can an ordinary user change this file or folder? Looks for Everyone / Authenticated Users / Users with a write-type right.
+function Test-WritableByUsers($Acl) {
+    $weakSids = @('S-1-1-0', 'S-1-5-11', 'S-1-5-32-545')
+    $writeMask = 0x2 -bor 0x4 -bor 0x10000 -bor 0x40000 -bor 0x80000 -bor 0x10000000 -bor 0x40000000
+    foreach ($ace in @($Acl.Access)) {
+        if ("$($ace.AccessControlType)" -ne 'Allow') { continue }
+        $sid = ''
+        try { $sid = $ace.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value } catch { $sid = "$($ace.IdentityReference)" }
+        if ($weakSids -notcontains $sid) { continue }
+        if (([int]$ace.FileSystemRights -band $writeMask) -ne 0) { return $true }
+    }
+    return $false
+}
+
+function Invoke-SafeStep([string]$Name, [scriptblock]$Body) {
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    try { & $Body } catch { Add-Result 'FAILED' "$Name stopped early - $($_.Exception.Message)" }
+    Write-HardenLog ("TIME   step '{0}' {1:N1}s" -f $Name, $sw.Elapsed.TotalSeconds)
+}
+
 function Invoke-Backdoors {
-    Write-Info 'Programs that start automatically (Run keys)'
-    Write-Why 'Malware adds itself here so it starts every time someone logs in.'
-    $runKeys = @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run', 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce',
-                 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\RunOnce',
-                 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer\Run')
-    foreach ($h in Get-UserHives) { $runKeys += @("$h\Software\Microsoft\Windows\CurrentVersion\Run", "$h\Software\Microsoft\Windows\CurrentVersion\RunOnce") }
-    $count = 0
-    foreach ($key in $runKeys) {
-        $item = Get-Item -LiteralPath $key -ErrorAction SilentlyContinue
-        if (-not $item) { continue }
-        foreach ($name in $item.GetValueNames()) {
-            if (-not $name) { continue }
-            $data = "$($item.GetValue($name))"
-            if ($data -match $CpProtectRegex) { continue }
-            $count++
-            if ($data -match $SuspiciousCmdRegex) {
-                Add-Result 'REVIEW' "SUSPICIOUS startup entry '$name': $data"
-                if (Confirm-Step "Delete startup entry '$name'?" 'y') {
-                    $k = $key; $n = $name
-                    Backup-RegKey $k
-                    Invoke-Fix "Deleted startup entry $n" { Remove-ItemProperty -LiteralPath $k -Name $n -ErrorAction Stop } | Out-Null
+    Invoke-SafeStep 'Run keys' {
+        Write-Info 'Programs that start automatically (Run keys)'
+        Write-Why 'Malware adds itself here so it starts every time someone logs in.'
+        $runKeys = @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run', 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce',
+                     'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\RunOnce',
+                     'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer\Run')
+        foreach ($h in Get-UserHives) { $runKeys += @("$h\Software\Microsoft\Windows\CurrentVersion\Run", "$h\Software\Microsoft\Windows\CurrentVersion\RunOnce", "$h\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\Run") }
+        $count = 0
+        foreach ($key in $runKeys) {
+            $item = Get-Item -LiteralPath $key -ErrorAction SilentlyContinue
+            if (-not $item) { continue }
+            foreach ($name in $item.GetValueNames()) {
+                if (-not $name) { continue }
+                $data = "$($item.GetValue($name))"
+                if ($data -match $CpProtectRegex) { continue }
+                $count++
+                if ($data -match $SuspiciousCmdRegex) {
+                    Add-Result 'REVIEW' "SUSPICIOUS startup entry '$name': $data"
+                    if (Confirm-Step "Delete startup entry '$name'?" 'y') {
+                        $k = $key; $n = $name
+                        Backup-RegKey $k
+                        Invoke-Fix "Deleted startup entry $n" { Remove-ItemProperty -LiteralPath $k -Name $n -ErrorAction Stop } | Out-Null
+                    }
+                } else {
+                    Add-Result 'REVIEW' "Startup entry '$name': $data"
                 }
-            } else {
-                Add-Result 'REVIEW' "Startup entry '$name': $data"
+            }
+        }
+        if ($count -eq 0) { Add-Result 'OK' 'No programs in the Run keys' }
+        # "Load" and "Run" under Windows NT\CurrentVersion\Windows start a program at logon too (normally empty)
+        foreach ($base in @('HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows NT\CurrentVersion\Windows') + @(Get-UserHives | ForEach-Object { "$_\Software\Microsoft\Windows NT\CurrentVersion\Windows" })) {
+            foreach ($v in @('Load', 'Run')) {
+                $val = "$(Get-RegValue $base $v)"
+                if (-not $val.Trim() -or $val -match $CpProtectRegex) { continue }
+                Add-Result 'REVIEW' "Logon program in $base ($v): $val"
+                if (Confirm-Step "Remove the '$v' logon program '$val'?" 'y') { Remove-RegValue $base $v "Removed the '$v' logon program from $base" }
             }
         }
     }
-    if ($count -eq 0) { Add-Result 'OK' 'No programs in the Run keys' }
 
-    Write-Info 'Startup folders'
-    $dirs = @("$env:ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp")
-    $dirs += @(Get-ChildItem "$env:SystemDrive\Users" -Directory -Force -ErrorAction SilentlyContinue | ForEach-Object { Join-Path $_.FullName 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup' })
-    $shell = New-Object -ComObject WScript.Shell
-    foreach ($d in $dirs) {
-        foreach ($f in @(Get-ChildItem -LiteralPath $d -File -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'desktop.ini' })) {
-            $target = $f.FullName
-            if ($f.Extension -eq '.lnk') { try { $lnk = $shell.CreateShortcut($f.FullName); $target = "$($lnk.TargetPath) $($lnk.Arguments)" } catch { Write-HardenLog "shortcut unreadable: $($f.FullName)" } }
-            if ($f.Extension -match '(?i)^\.(bat|cmd|ps1|vbs|vbe|js|jse|hta|wsf|scr|exe)$' -or $target -match $SuspiciousCmdRegex) {
-                Add-Result 'REVIEW' "SUSPICIOUS startup item: $($f.FullName) -> $target"
-                if (Confirm-Step "Delete $($f.Name)?" 'y') {
-                    $path = $f.FullName
-                    Copy-Item -LiteralPath $path -Destination $BackupDir -Force -ErrorAction SilentlyContinue
-                    Invoke-Fix "Deleted startup item $path" { Remove-Item -LiteralPath $path -Force -ErrorAction Stop } | Out-Null
-                }
-            } else { Add-Result 'REVIEW' "Startup item: $($f.FullName) -> $target" }
-        }
-    }
-
-    Write-Info 'Scheduled tasks'
-    Write-Why 'A scheduled task can re-start a backdoor every few minutes, even after you delete it.'
-    $tasks = @(Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { "$($_.TaskPath)$($_.TaskName)" -notmatch $CpProtectRegex })
-    $nonMs = 0
-    foreach ($t in $tasks) {
-        $actions = @($t.Actions | ForEach-Object { "$($_.Execute) $($_.Arguments)".Trim() }) -join ' ; '
-        $isMs = $t.TaskPath -like '\Microsoft\*'
-        if (Test-SuspiciousTask $t.TaskPath $actions) {
-            Add-Result 'REVIEW' "SUSPICIOUS scheduled task $($t.TaskPath)$($t.TaskName): $actions"
-            if (Confirm-Step "Delete scheduled task '$($t.TaskName)'?" 'y') {
-                $tn = $t.TaskName; $tp = $t.TaskPath
-                try { Export-ScheduledTask -TaskName $tn -TaskPath $tp | Out-File (Join-Path $BackupDir ("task-" + ($tn -replace '[\\/:*?"<>|]', '_') + '.xml')) } catch { Write-HardenLog "skipped: $($_.Exception.Message)" }
-                Invoke-Fix "Deleted scheduled task $tp$tn" { Unregister-ScheduledTask -TaskName $tn -TaskPath $tp -Confirm:$false -ErrorAction Stop } | Out-Null
+    Invoke-SafeStep 'Startup folders' {
+        Write-Info 'Startup folders'
+        $dirs = @("$env:ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp")
+        $dirs += @(Get-ChildItem "$env:SystemDrive\Users" -Directory -Force -ErrorAction SilentlyContinue | ForEach-Object { Join-Path $_.FullName 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup' })
+        $shell = $null
+        try { $shell = New-Object -ComObject WScript.Shell } catch { Write-HardenLog "WScript.Shell unavailable: $($_.Exception.Message)" }
+        foreach ($d in $dirs) {
+            foreach ($f in @(Get-ChildItem -LiteralPath $d -File -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'desktop.ini' })) {
+                $target = $f.FullName
+                if ($shell -and $f.Extension -eq '.lnk') { try { $lnk = $shell.CreateShortcut($f.FullName); $target = "$($lnk.TargetPath) $($lnk.Arguments)" } catch { Write-HardenLog "shortcut unreadable: $($f.FullName)" } }
+                if ($f.Extension -match '(?i)^\.(bat|cmd|ps1|vbs|vbe|js|jse|hta|wsf|scr|exe)$' -or $target -match $SuspiciousCmdRegex) {
+                    Add-Result 'REVIEW' "SUSPICIOUS startup item: $($f.FullName) -> $target"
+                    if (Confirm-Step "Delete $($f.Name)?" 'y') {
+                        $path = $f.FullName
+                        Copy-Item -LiteralPath $path -Destination $BackupDir -Force -ErrorAction SilentlyContinue
+                        Invoke-Fix "Deleted startup item $path" { Remove-Item -LiteralPath $path -Force -ErrorAction Stop } | Out-Null
+                    }
+                } else { Add-Result 'REVIEW' "Startup item: $($f.FullName) -> $target" }
             }
-        } elseif (-not $isMs) {
-            $nonMs++
-            Add-Result 'REVIEW' "Non-Microsoft scheduled task $($t.TaskPath)$($t.TaskName): $actions"
         }
     }
-    if ($nonMs -eq 0) { Add-Result 'OK' 'No unusual scheduled tasks' }
 
-    Write-Info 'Services running from unusual folders'
-    foreach ($s in @(Get-CimInstance Win32_Service -ErrorAction SilentlyContinue)) {
-        $path = "$($s.PathName)"
-        if (-not $path -or $path -match $CpProtectRegex -or $s.Name -match $CpProtectRegex) { continue }
-        if ($path -match '(?i)^"?[A-Z]:\\Windows\\' -or $path -match '(?i)^"?[A-Z]:\\Program Files') {
-            if ($path -notmatch '^"' -and $path -match '(?i)^[A-Z]:\\[^"]* [^"]*\.exe') {
+    Invoke-SafeStep 'Scheduled tasks' {
+        Write-Info 'Scheduled tasks'
+        Write-Why 'A scheduled task can re-start a backdoor every few minutes, even after you delete it.'
+        $tasks = @(Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { "$($_.TaskPath)$($_.TaskName)" -notmatch $CpProtectRegex })
+        $nonMs = 0
+        foreach ($t in $tasks) {
+            $actions = @($t.Actions | ForEach-Object { "$($_.Execute) $($_.Arguments)".Trim() }) -join ' ; '
+            $isMs = $t.TaskPath -like '\Microsoft\*'
+            if (Test-SuspiciousTask $t.TaskPath $actions) {
+                Add-Result 'REVIEW' "SUSPICIOUS scheduled task $($t.TaskPath)$($t.TaskName): $actions"
+                if (Confirm-Step "Delete scheduled task '$($t.TaskName)'?" 'y') {
+                    $tn = $t.TaskName; $tp = $t.TaskPath
+                    try { Export-ScheduledTask -TaskName $tn -TaskPath $tp | Out-File (Join-Path $BackupDir ("task-" + ($tn -replace '[\\/:*?"<>|]', '_') + '.xml')) } catch { Write-HardenLog "skipped: $($_.Exception.Message)" }
+                    Invoke-Fix "Deleted scheduled task $tp$tn" { Unregister-ScheduledTask -TaskName $tn -TaskPath $tp -Confirm:$false -ErrorAction Stop } | Out-Null
+                }
+            } elseif (-not $isMs) {
+                $nonMs++
+                Add-Result 'REVIEW' "Non-Microsoft scheduled task $($t.TaskPath)$($t.TaskName): $actions"
+            }
+        }
+        if ($nonMs -eq 0) { Add-Result 'OK' 'No unusual scheduled tasks' }
+    }
+
+    Invoke-SafeStep 'Services' {
+        Write-Info 'Services running from unusual folders'
+        $writable = New-Object System.Collections.Generic.List[string]
+        $seenExe = @{}
+        foreach ($s in @(Get-CimInstance Win32_Service -ErrorAction SilentlyContinue)) {
+            $path = "$($s.PathName)"
+            if (-not $path -or $path -match $CpProtectRegex -or $s.Name -match $CpProtectRegex) { continue }
+            $v = Get-ServicePathVerdict $path
+            $dcSafe = ($script:IsDC -and $DcProtectedServices -contains $s.Name)
+            if ($v.Unquoted -and -not $dcSafe -and $v.Exe -match '(?i)\.exe$') {
                 Add-Result 'REVIEW' "Service '$($s.Name)' has an UNQUOTED path with spaces (privilege-escalation risk): $path"
                 if (Confirm-Step "Add quotes around the path of '$($s.Name)'?" 'y') {
-                    $exe = [regex]::Match($path, '(?i)^.*?\.exe').Value
-                    $rest = $path.Substring($exe.Length)
-                    Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Services\$($s.Name)" 'ImagePath' "`"$exe`"$rest" 'ExpandString' "Quoted the path of service $($s.Name)"
+                    Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Services\$($s.Name)" 'ImagePath' "`"$($v.Exe)`"$($v.Rest)" 'ExpandString' "Quoted the path of service $($s.Name)"
                 }
             }
-            continue
-        }
-        if ($path -match $SuspiciousCmdRegex -or $path -match '(?i)\\(Users|ProgramData|Temp)\\') {
-            Add-Result 'REVIEW' "SUSPICIOUS service '$($s.Name)' ($($s.DisplayName)): $path"
-            if (Confirm-Step "Stop and disable service '$($s.Name)'?" 'y') { $n = $s.Name; Invoke-Fix "Stopped and disabled service $n" { Disable-ServiceNow $n } | Out-Null }
-        } else {
-            Add-Result 'REVIEW' "Service '$($s.Name)' runs from an unusual folder: $path"
-        }
-    }
-
-    Write-Info 'Hijacked accessibility tools (sticky keys backdoor)'
-    Write-Why 'Replacing sethc.exe (Sticky Keys) or utilman.exe with cmd.exe gives anyone a SYSTEM command prompt at the logon screen.'
-    $ifeo = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options'
-    $hij = 0
-    foreach ($k in @(Get-ChildItem $ifeo -ErrorAction SilentlyContinue)) {
-        $dbg = $k.GetValue('Debugger')
-        if (-not $dbg) { continue }
-        $hij++
-        Add-Result 'REVIEW' "$($k.PSChildName) is hijacked: whenever it runs, '$dbg' runs instead"
-        if (Confirm-Step "Remove the hijack from $($k.PSChildName)?" 'y') {
-            $kp = $k.PSPath
-            Remove-RegValue $kp 'Debugger' "Removed the Debugger hijack from $($k.PSChildName)"
-        }
-    }
-    foreach ($exe in @('sethc.exe', 'utilman.exe', 'osk.exe', 'Magnify.exe', 'Narrator.exe', 'DisplaySwitch.exe', 'AtBroker.exe')) {
-        $p = Join-Path $env:SystemRoot "System32\$exe"
-        if (-not (Test-Path $p)) { continue }
-        $orig = ((Get-Item $p).VersionInfo.OriginalFilename -replace '(?i)\.mui$', '').ToLower()
-        if ($orig -match '^(cmd|powershell|pwsh|explorer|taskmgr|regedit|mmc|conhost|wscript|cscript|mshta|rundll32)\.exe$') {
-            $hij++
-            Add-Result 'REVIEW' "$exe has been REPLACED by another program ($orig)"
-            if (Confirm-Step "Restore the real $exe with System File Checker?" 'y') {
-                $target = $p
-                Invoke-Fix "Restored $exe (sfc /scanfile)" { & sfc.exe "/scanfile=$target" | Out-Null } | Out-Null
-            }
-        }
-    }
-    if ($hij -eq 0) { Add-Result 'OK' 'Accessibility tools are not hijacked' }
-
-    Write-Info 'Logon programs, AppInit DLLs and LSA packages'
-    $wl = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
-    $userinit = "$(Get-RegValue $wl 'Userinit')"
-    if ($userinit -and $userinit.TrimEnd(',').Trim() -notmatch '(?i)^[A-Z]:\\Windows\\system32\\userinit\.exe$') {
-        Add-Result 'REVIEW' "Winlogon Userinit runs extra programs at logon: $userinit"
-        if (Confirm-Step 'Reset Userinit to the default?' 'y') { Set-Reg $wl 'Userinit' "$env:SystemRoot\system32\userinit.exe," 'String' 'Winlogon Userinit is the default' }
-    } else { Add-Result 'OK' 'Winlogon Userinit is normal' }
-    $shellVal = "$(Get-RegValue $wl 'Shell')"
-    if ($shellVal -and $shellVal -ne 'explorer.exe') {
-        Add-Result 'REVIEW' "Winlogon Shell is not just explorer.exe: $shellVal"
-        if ($shellVal -match '(?i)explorer\.exe.+' -and (Confirm-Step 'Reset Shell to explorer.exe?' 'y')) { Set-Reg $wl 'Shell' 'explorer.exe' 'String' 'Winlogon Shell is explorer.exe' }
-    }
-    foreach ($w in @('HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows NT\CurrentVersion\Windows')) {
-        $dlls = "$(Get-RegValue $w 'AppInit_DLLs')"
-        if ($dlls.Trim()) {
-            Add-Result 'REVIEW' "AppInit_DLLs loads '$dlls' into every program"
-            if (Confirm-Step 'Clear AppInit_DLLs?' 'y') {
-                Set-Reg $w 'AppInit_DLLs' '' 'String' 'AppInit_DLLs cleared'
-                Set-Reg $w 'LoadAppInit_DLLs' 0 'DWord' 'AppInit_DLLs loading off'
-            }
-        }
-    }
-    $lsaItem = Get-Item 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
-    $knownPkgs = @('msv1_0', 'scecli', 'rassfm', 'kerberos', 'schannel', 'wdigest', 'tspkg', 'pku2u', 'cloudap', 'negoexts', 'livessp', '""', '')
-    foreach ($v in @('Authentication Packages', 'Notification Packages', 'Security Packages')) {
-        $odd = @(@($lsaItem.GetValue($v)) | Where-Object { $knownPkgs -notcontains "$_".ToLower() })
-        if ($odd.Count -gt 0) { Add-Result 'REVIEW' "Unusual LSA '$v': $($odd -join ', ') (could be a password stealer like mimilib)" }
-    }
-
-    Write-Info 'WMI event subscriptions (a hidden way to run programs)'
-    try {
-        $consumers = @(Get-CimInstance -Namespace root\subscription -ClassName CommandLineEventConsumer -ErrorAction Stop) +
-                     @(Get-CimInstance -Namespace root\subscription -ClassName ActiveScriptEventConsumer -ErrorAction SilentlyContinue)
-        $consumers = @($consumers | Where-Object { $_ -and "$($_.Name)" -notmatch $CpProtectRegex })
-        if ($consumers.Count -eq 0) { Add-Result 'OK' 'No WMI command/script subscriptions' }
-        foreach ($c in $consumers) {
-            Add-Result 'REVIEW' "WMI subscription '$($c.Name)': $($c.CommandLineTemplate)$($c.ScriptText)"
-            if (Confirm-Step "Remove WMI subscription '$($c.Name)'?" 'y') {
-                $cons = $c
-                Invoke-Fix "Removed WMI subscription $($c.Name)" {
-                    $binds = @(Get-CimInstance -Namespace root\subscription -ClassName __FilterToConsumerBinding | Where-Object { $_.Consumer.Name -eq $cons.Name -or "$($_.Consumer)" -match [regex]::Escape($cons.Name) })
-                    foreach ($b in $binds) {
-                        $filterName = if ($b.Filter.Name) { "$($b.Filter.Name)" } else { [regex]::Match("$($b.Filter)", 'Name = "([^"]+)"').Groups[1].Value }
-                        $b | Remove-CimInstance -ErrorAction Stop
-                        if ($filterName) { Get-CimInstance -Namespace root\subscription -ClassName __EventFilter | Where-Object { $_.Name -eq $filterName } | Remove-CimInstance -ErrorAction SilentlyContinue }
+            if ($v.Kind -eq 'trusted') {
+                # Files the system owns are fine; a program in Program Files that Users can overwrite is a way to SYSTEM
+                if ($v.Exe -notmatch '(?i)^[A-Z]:\\Windows\\' -and -not $seenExe.ContainsKey($v.Exe)) {
+                    $seenExe[$v.Exe] = $true
+                    foreach ($target in @($v.Exe, (Split-Path -Parent $v.Exe))) {
+                        $acl = $null
+                        try { $acl = Get-Acl -LiteralPath $target -ErrorAction Stop } catch { continue }
+                        if (Test-WritableByUsers $acl) { $writable.Add("$($s.Name): $target"); break }
                     }
-                    $cons | Remove-CimInstance -ErrorAction Stop
+                }
+                continue
+            }
+            if ($v.Kind -eq 'suspicious') {
+                Add-Result 'REVIEW' "SUSPICIOUS service '$($s.Name)' ($($s.DisplayName)): $path"
+                if (-not $dcSafe -and (Confirm-Step "Stop and disable service '$($s.Name)'?" 'y')) { $n = $s.Name; Invoke-Fix "Stopped and disabled service $n" { Disable-ServiceNow $n } | Out-Null }
+            } elseif ($v.Kind -eq 'unusual') {
+                Add-Result 'REVIEW' "Service '$($s.Name)' runs from an unusual folder: $path"
+            }
+        }
+        if ($writable.Count -gt 0) {
+            Add-Result 'REVIEW' "$($writable.Count) service program(s) or folder(s) that ordinary users can change (they could swap in their own program): fix the permissions with icacls"
+            Show-List $writable 15
+        }
+    }
+
+    Invoke-SafeStep 'Accessibility tools' {
+        Write-Info 'Hijacked accessibility tools (sticky keys backdoor)'
+        Write-Why 'Replacing sethc.exe (Sticky Keys) or utilman.exe with cmd.exe gives anyone a SYSTEM command prompt at the logon screen.'
+        $hij = 0
+        foreach ($ifeo in @('HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows NT\CurrentVersion\Image File Execution Options')) {
+            foreach ($k in @(Get-ChildItem $ifeo -ErrorAction SilentlyContinue)) {
+                $dbg = $k.GetValue('Debugger')
+                if (-not $dbg) { continue }
+                $hij++
+                Add-Result 'REVIEW' "$($k.PSChildName) is hijacked: whenever it runs, '$dbg' runs instead"
+                if (Confirm-Step "Remove the hijack from $($k.PSChildName)?" 'y') {
+                    $kp = $k.PSPath
+                    Remove-RegValue $kp 'Debugger' "Removed the Debugger hijack from $($k.PSChildName)"
+                }
+            }
+        }
+        foreach ($exe in @('sethc.exe', 'utilman.exe', 'osk.exe', 'Magnify.exe', 'Narrator.exe', 'DisplaySwitch.exe', 'AtBroker.exe')) {
+            $p = Join-Path $env:SystemRoot "System32\$exe"
+            if (-not (Test-Path -LiteralPath $p)) { continue }
+            $orig = ("$((Get-Item -LiteralPath $p).VersionInfo.OriginalFilename)" -replace '(?i)\.mui$', '').ToLower()
+            if ($orig -match '^(cmd|powershell|pwsh|explorer|taskmgr|regedit|mmc|conhost|wscript|cscript|mshta|rundll32)\.exe$') {
+                $hij++
+                Add-Result 'REVIEW' "$exe has been REPLACED by another program ($orig)"
+                if (Confirm-Step "Restore the real $exe with System File Checker?" 'y') {
+                    $target = $p
+                    Invoke-Fix "Restored $exe (sfc /scanfile)" { & sfc.exe "/scanfile=$target" | Out-Null } | Out-Null
+                }
+            }
+        }
+        if ($hij -eq 0) { Add-Result 'OK' 'Accessibility tools are not hijacked' }
+    }
+
+    Invoke-SafeStep 'Logon programs' {
+        Write-Info 'Logon programs, AppInit DLLs, crash debuggers and LSA packages'
+        $wl = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+        $userinit = "$(Get-RegValue $wl 'Userinit')"
+        if ($userinit -and $userinit.TrimEnd(',').Trim() -notmatch '(?i)^[A-Z]:\\Windows\\system32\\userinit\.exe$') {
+            Add-Result 'REVIEW' "Winlogon Userinit runs extra programs at logon: $userinit"
+            if (Confirm-Step 'Reset Userinit to the default?' 'y') { Set-Reg $wl 'Userinit' "$env:SystemRoot\system32\userinit.exe," 'String' 'Winlogon Userinit is the default' }
+        } else { Add-Result 'OK' 'Winlogon Userinit is normal' }
+        $shellVal = "$(Get-RegValue $wl 'Shell')"
+        if ($shellVal -and $shellVal -ne 'explorer.exe') {
+            Add-Result 'REVIEW' "Winlogon Shell is not just explorer.exe: $shellVal"
+            if ($shellVal -match '(?i)explorer\.exe.+' -and (Confirm-Step 'Reset Shell to explorer.exe?' 'y')) { Set-Reg $wl 'Shell' 'explorer.exe' 'String' 'Winlogon Shell is explorer.exe' }
+        }
+        # Taskman replaces Task Manager at logon; it is normally absent
+        $taskman = "$(Get-RegValue $wl 'Taskman')"
+        if ($taskman.Trim()) {
+            Add-Result 'REVIEW' "Winlogon Taskman runs '$taskman' in place of Task Manager"
+            if (Confirm-Step 'Remove Taskman?' 'y') { Remove-RegValue $wl 'Taskman' 'Winlogon Taskman removed' }
+        }
+        foreach ($w in @('HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows NT\CurrentVersion\Windows')) {
+            $dlls = "$(Get-RegValue $w 'AppInit_DLLs')"
+            if ($dlls.Trim()) {
+                Add-Result 'REVIEW' "AppInit_DLLs loads '$dlls' into every program"
+                if (Confirm-Step 'Clear AppInit_DLLs?' 'y') {
+                    Set-Reg $w 'AppInit_DLLs' '' 'String' 'AppInit_DLLs cleared'
+                    Set-Reg $w 'LoadAppInit_DLLs' 0 'DWord' 'AppInit_DLLs loading off'
+                }
+            }
+        }
+        # AeDebug: the program that starts when something crashes (normally absent, or Visual Studio's debugger)
+        foreach ($ae in @('HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\AeDebug', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows NT\CurrentVersion\AeDebug')) {
+            $dbg = "$(Get-RegValue $ae 'Debugger')"
+            if (-not $dbg.Trim() -or $dbg -match '(?i)vsjitdebugger|drwtsn32|windbg') { continue }
+            Add-Result 'REVIEW' "Crash debugger (AeDebug) runs '$dbg' when a program crashes"
+            if (($dbg -match $SuspiciousCmdRegex -or $dbg -match '(?i)\\(cmd|powershell|pwsh|nc|ncat)\.exe') -and (Confirm-Step 'Remove the AeDebug debugger?' 'y')) { Remove-RegValue $ae 'Debugger' 'AeDebug debugger removed' }
+        }
+        $boot = @(Get-RegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager' 'BootExecute' | Where-Object { "$_".Trim() })
+        if ($boot.Count -gt 0 -and (($boot -join ' ') -notmatch '^(?i)autocheck autochk \*$')) { Add-Result 'REVIEW' "BootExecute runs extra programs at boot: $($boot -join ' | ')" }
+        $special = Get-Item -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList' -ErrorAction SilentlyContinue
+        if ($special) { $hiddenNames = @($special.GetValueNames() | Where-Object { $_ }); if ($hiddenNames.Count -gt 0) { Add-Result 'REVIEW' "Accounts hidden from the logon screen (SpecialAccounts\UserList): $($hiddenNames -join ', ') - check they are in the README" } }
+        $lsaItem = Get-Item 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+        $knownPkgs = @('msv1_0', 'scecli', 'rassfm', 'kerberos', 'schannel', 'wdigest', 'tspkg', 'pku2u', 'cloudap', 'negoexts', 'livessp', '""', '')
+        foreach ($v in @('Authentication Packages', 'Notification Packages', 'Security Packages')) {
+            $odd = @(@($lsaItem.GetValue($v)) | Where-Object { $knownPkgs -notcontains "$_".ToLower() })
+            if ($odd.Count -gt 0) { Add-Result 'REVIEW' "Unusual LSA '$v': $($odd -join ', ') (could be a password stealer like mimilib)" }
+        }
+    }
+
+    Invoke-SafeStep 'WMI subscriptions' {
+        Write-Info 'WMI event subscriptions (a hidden way to run programs)'
+        try {
+            $consumers = @(Get-CimInstance -Namespace root\subscription -ClassName CommandLineEventConsumer -ErrorAction Stop) +
+                         @(Get-CimInstance -Namespace root\subscription -ClassName ActiveScriptEventConsumer -ErrorAction SilentlyContinue)
+            $consumers = @($consumers | Where-Object { $_ -and "$($_.Name)" -notmatch $CpProtectRegex })
+            if ($consumers.Count -eq 0) { Add-Result 'OK' 'No WMI command/script subscriptions' }
+            foreach ($c in $consumers) {
+                Add-Result 'REVIEW' "WMI subscription '$($c.Name)': $($c.CommandLineTemplate)$($c.ScriptText)"
+                if (Confirm-Step "Remove WMI subscription '$($c.Name)'?" 'y') {
+                    $cons = $c
+                    Invoke-Fix "Removed WMI subscription $($c.Name)" {
+                        $binds = @(Get-CimInstance -Namespace root\subscription -ClassName __FilterToConsumerBinding | Where-Object { $_.Consumer.Name -eq $cons.Name -or "$($_.Consumer)" -match [regex]::Escape($cons.Name) })
+                        foreach ($b in $binds) {
+                            $filterName = if ($b.Filter.Name) { "$($b.Filter.Name)" } else { [regex]::Match("$($b.Filter)", 'Name = "([^"]+)"').Groups[1].Value }
+                            $b | Remove-CimInstance -ErrorAction Stop
+                            if ($filterName) { Get-CimInstance -Namespace root\subscription -ClassName __EventFilter | Where-Object { $_.Name -eq $filterName } | Remove-CimInstance -ErrorAction SilentlyContinue }
+                        }
+                        $cons | Remove-CimInstance -ErrorAction Stop
+                    } | Out-Null
+                }
+            }
+        } catch { Write-HardenLog "WMI check skipped: $($_.Exception.Message)" }
+    }
+
+    Invoke-SafeStep 'Hosts file' {
+        Write-Info 'Checking the hosts file for fake website addresses'
+        Write-Why 'An attacker can point a real website (a bank, Windows Update) to their own computer.'
+        $hosts = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
+        $lines = @(Get-Content -LiteralPath $hosts -ErrorAction SilentlyContinue)
+        $bad = @()
+        for ($i = 0; $i -lt $lines.Count; $i++) {
+            if (Test-HostsLineSuspicious $lines[$i]) { $bad += $i }
+        }
+        if ($bad.Count -eq 0) { Add-Result 'OK' 'The hosts file has no extra entries' }
+        else {
+            Add-Result 'REVIEW' "$($bad.Count) unusual line(s) in the hosts file"
+            Show-List ($bad | ForEach-Object { $lines[$_] }) 10
+            if (Confirm-Step 'Comment out these lines in the hosts file?' 'y') {
+                $newLines = $lines; $badIdx = $bad
+                Invoke-Fix 'Disabled unusual hosts file entries' {
+                    Copy-Item -LiteralPath $hosts (Join-Path $BackupDir 'hosts') -Force
+                    # a read-only hosts file (a favourite trick) refuses the write
+                    $hf = Get-Item -LiteralPath $hosts -Force
+                    if ($hf.IsReadOnly) { $hf.IsReadOnly = $false }
+                    for ($j = 0; $j -lt $newLines.Count; $j++) { if ($badIdx -contains $j) { $newLines[$j] = "# disabled by harden.ps1: $($newLines[$j])" } }
+                    Set-Content -LiteralPath $hosts -Value $newLines -Encoding ASCII -ErrorAction Stop
                 } | Out-Null
             }
         }
-    } catch { Write-HardenLog "WMI check skipped: $($_.Exception.Message)" }
-
-    Write-Info 'Checking the hosts file for fake website addresses'
-    Write-Why 'An attacker can point a real website (a bank, Windows Update) to their own computer.'
-    $hosts = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
-    $lines = @(Get-Content $hosts -ErrorAction SilentlyContinue)
-    $bad = @()
-    for ($i = 0; $i -lt $lines.Count; $i++) {
-        $l = $lines[$i].Trim()
-        if (-not $l -or $l.StartsWith('#')) { continue }
-        if ($l -match '^(127\.0\.0\.1|::1)\s+localhost\s*$') { continue }
-        $bad += $i
-    }
-    if ($bad.Count -eq 0) { Add-Result 'OK' 'The hosts file has no extra entries' }
-    else {
-        Add-Result 'REVIEW' "$($bad.Count) unusual line(s) in the hosts file"
-        Show-List ($bad | ForEach-Object { $lines[$_] }) 10
-        if (Confirm-Step 'Comment out these lines in the hosts file?' 'y') {
-            $newLines = $lines; $badIdx = $bad
-            Invoke-Fix 'Disabled unusual hosts file entries' {
-                Copy-Item $hosts (Join-Path $BackupDir 'hosts') -Force
-                for ($j = 0; $j -lt $newLines.Count; $j++) { if ($badIdx -contains $j) { $newLines[$j] = "# disabled by harden.ps1: $($newLines[$j])" } }
-                Set-Content -Path $hosts -Value $newLines -Encoding ASCII -ErrorAction Stop
-            } | Out-Null
-        }
     }
 
-    Write-Info 'Programs listening for network connections'
-    Write-Why 'A backdoor is often netcat or a script waiting for the attacker to connect.'
-    $listen = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Sort-Object LocalPort -Unique)
-    $rows = @()
-    foreach ($c in $listen) {
-        $proc = Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue
-        $pname = if ($proc) { $proc.ProcessName } else { '?' }
-        $rows += ("{0,-6} {1,-22} {2} (PID {3})" -f $c.LocalPort, $c.LocalAddress, $pname, $c.OwningProcess)
-        if ($pname -match '(?i)^(nc|nc64|ncat|netcat|powershell|pwsh|cmd|python\d*|perl|ruby|wscript|cscript|mshta|rundll32|socat)$') {
-            Add-Result 'REVIEW' "POSSIBLE BACKDOOR: '$pname' (PID $($c.OwningProcess)) is listening on port $($c.LocalPort)"
-            if (Confirm-Step "Stop process $($c.OwningProcess)? (also find what starts it: tasks, services, Run keys)" 'y') {
-                $procId = $c.OwningProcess
-                Invoke-Fix "Stopped process $procId ($pname)" { Stop-Process -Id $procId -Force -ErrorAction Stop } | Out-Null
+    Invoke-SafeStep 'Listening ports' {
+        Write-Info 'Programs listening for network connections'
+        Write-Why 'A backdoor is often netcat or a script waiting for the attacker to connect.'
+        $listen = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Sort-Object LocalPort -Unique)
+        $rows = @()
+        foreach ($c in $listen) {
+            $proc = Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue
+            $pname = if ($proc) { $proc.ProcessName } else { '?' }
+            $rows += ("{0,-6} {1,-22} {2} (PID {3})" -f $c.LocalPort, $c.LocalAddress, $pname, $c.OwningProcess)
+            if ($pname -match '(?i)^(nc|nc64|ncat|netcat|powershell|pwsh|cmd|python\d*|perl|ruby|wscript|cscript|mshta|rundll32|socat)$' -and $c.OwningProcess -ne $PID) {
+                Add-Result 'REVIEW' "POSSIBLE BACKDOOR: '$pname' (PID $($c.OwningProcess)) is listening on port $($c.LocalPort)"
+                if (Confirm-Step "Stop process $($c.OwningProcess)? (also find what starts it: tasks, services, Run keys)" 'y') {
+                    $procId = $c.OwningProcess
+                    Invoke-Fix "Stopped process $procId ($pname)" { Stop-Process -Id $procId -Force -ErrorAction Stop } | Out-Null
+                }
             }
         }
+        Add-Result 'REVIEW' "$($listen.Count) listening port(s) - compare with the README's critical services"
+        Show-List $rows 25
     }
-    Add-Result 'REVIEW' "$($listen.Count) listening port(s) - compare with the README's critical services"
-    Show-List $rows 25
 
-    Write-Info 'PowerShell profiles (run every time PowerShell starts)'
-    $profiles = @("$PSHOME\profile.ps1", "$PSHOME\Microsoft.PowerShell_profile.ps1")
-    $profiles += @(Get-ChildItem "$env:SystemDrive\Users\*\Documents\*PowerShell\*profile.ps1" -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
-    $pcount = 0
-    foreach ($p in $profiles) { if (Test-Path $p) { $pcount++; Add-Result 'REVIEW' "PowerShell profile exists: $p - check what it runs" } }
-    if ($pcount -eq 0) { Add-Result 'OK' 'No PowerShell profiles' }
+    Invoke-SafeStep 'PowerShell profiles' {
+        Write-Info 'PowerShell profiles (run every time PowerShell starts)'
+        $profiles = @("$PSHOME\profile.ps1", "$PSHOME\Microsoft.PowerShell_profile.ps1")
+        $profiles += @(Get-ChildItem "$env:SystemDrive\Users\*\Documents\*PowerShell\*profile.ps1" -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+        $pcount = 0
+        foreach ($p in $profiles) { if (Test-Path -LiteralPath $p) { $pcount++; Add-Result 'REVIEW' "PowerShell profile exists: $p - check what it runs" } }
+        if ($pcount -eq 0) { Add-Result 'OK' 'No PowerShell profiles' }
+    }
 }
 
 # ===========================================================================
@@ -1835,6 +2144,7 @@ function Invoke-Misc {
     Write-Why 'Attackers answer these broadcast name lookups to steal password hashes (tools like Responder).'
     Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient' 'EnableMulticast' 0 'DWord' 'LLMNR off'
     Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\WinHttp' 'DisableWpad' 1 'DWord' 'Web proxy auto-discovery (WPAD) off'
+    Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinHttp' 'DisableWpad' 1 'DWord' 'Web proxy auto-discovery (WPAD) off (policy key, as the Server checklist 13.2 reads it)'
     Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\LanmanWorkstation' 'AllowInsecureGuestAuth' 0 'DWord' 'SMB client: no insecure guest logons'
     if (-not $script:IsDC -or (Confirm-Step 'This is a Domain Controller. Turn off NetBIOS anyway? (old clients may need it)' 'n' -Strict)) {
         foreach ($i in @(Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces' -ErrorAction SilentlyContinue)) {
@@ -1995,6 +2305,24 @@ function Invoke-Roles {
             }
         }
     }
+    $dhcp = Get-Service DHCPServer -ErrorAction SilentlyContinue
+    if ($dhcp -and (Get-Command Get-DhcpServerv4Scope -ErrorAction SilentlyContinue) -and ((Test-Critical @('dhcp')) -or $dhcp.Status -eq 'Running')) {
+        $did = $true
+        Write-Info 'DHCP server'
+        Write-Why 'A planted DNS-server (006) or router (003) option sends every client to the attacker; audit logging records who got which address.'
+        try {
+            $al = Get-DhcpServerAuditLog -ErrorAction Stop
+            if ($al.Enable) { Add-Result 'OK' 'DHCP audit logging is on' }
+            else { Invoke-Fix 'DHCP audit logging on' { Set-DhcpServerAuditLog -Enable $true -ErrorAction Stop } | Out-Null }
+            $scopes = @(Get-DhcpServerv4Scope -ErrorAction Stop)
+            foreach ($sc in $scopes) { Add-Result 'REVIEW' "DHCP scope $($sc.ScopeId) '$($sc.Name)' $($sc.StartRange)-$($sc.EndRange) is $($sc.State): check it against the README" }
+            $opts = @(Get-DhcpServerv4OptionValue -ErrorAction SilentlyContinue)
+            foreach ($sc in $scopes) { $opts += @(Get-DhcpServerv4OptionValue -ScopeId $sc.ScopeId -ErrorAction SilentlyContinue) }
+            foreach ($o in @($opts | Where-Object { $_ -and $_.OptionId -in 3, 6, 15, 44, 66, 67 })) {
+                Add-Result 'REVIEW' "DHCP option $($o.OptionId) ($($o.Name)) = $(@($o.Value) -join ', '): every client gets this - it must match the README"
+            }
+        } catch { Add-Result 'FAILED' "DHCP checks - $($_.Exception.Message)" }
+    }
     if ($script:IsDC -and $script:HasAD) {
         $did = $true
         Write-Info 'Active Directory'
@@ -2016,7 +2344,7 @@ function Invoke-Roles {
             }
         } catch { Add-Result 'FAILED' "Active Directory checks - $($_.Exception.Message)" }
     }
-    if (-not $did) { Add-Result 'SKIPPED' 'No critical IIS, FTP, DNS or Active Directory role on this computer' }
+    if (-not $did) { Add-Result 'SKIPPED' 'No critical IIS, FTP, DNS, DHCP or Active Directory role on this computer' }
 }
 
 # ===========================================================================
@@ -2087,6 +2415,10 @@ function Show-Summary {
         Write-Host ''; Write-Host '  Needs attention, by section (REVIEW + WOULD):'
         foreach ($g in $attention) { Write-Host ("    {0}: {1}" -f $g.Name, $g.Count) }
     }
+    if ($script:Timings.Count -gt 0) {
+        $slow = @($script:Timings | Sort-Object Seconds -Descending | Select-Object -First 5 | ForEach-Object { '{0} {1:N0}s' -f $_.Section, $_.Seconds })
+        Write-Host ("  Slowest sections: {0}" -f ($slow -join ', '))
+    }
     Write-Host ("  Finished in {0}s." -f [int]((Get-Date) - $script:StartTime).TotalSeconds)
     Write-Host ''
     Write-Host "  Your to-do list (REVIEW items): $ReportFile"
@@ -2104,7 +2436,13 @@ function Invoke-Section([string]$Id) {
     $script:SecCache = $null
     Write-Header ("{0}   [{1}]" -f $s.Title, $script:Mode.ToUpper())
     Add-Content -Path $ReportFile -Value "`r`n## $($s.Title)`r`n"
+    if ($null -eq $script:Timings) { $script:Timings = New-Object System.Collections.Generic.List[object] }
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
     try { & $s.Fn } catch { Add-Result 'FAILED' "Section stopped early - $($_.Exception.Message)" }
+    $sw.Stop()
+    $script:Timings.Add([pscustomobject]@{ Section = $s.Id; Seconds = [math]::Round($sw.Elapsed.TotalSeconds, 1) })
+    Write-HardenLog ("TIME   section '{0}' {1:N1}s" -f $s.Id, $sw.Elapsed.TotalSeconds)
+    Write-Host ("  ({0} took {1:N1}s)" -f $s.Id, $sw.Elapsed.TotalSeconds) -ForegroundColor DarkGray
     $script:CurrentSection = 'setup'
 }
 

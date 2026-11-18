@@ -20,7 +20,7 @@ export const VERIFIED: Record<'linux' | 'windows' | 'freebsd', VerifiedState> = 
   },
   windows: {
     level: 'partial',
-    line: 'Script: 82 logic tests pass and PSScriptAnalyzer is clean, but it has not been run on a real Windows image.',
+    line: 'Script: 155 logic tests pass and PSScriptAnalyzer is clean, but it has not been run on a real Windows image.',
     detail:
       'The tests exercise the decision logic (which service is safe to stop, which account is privileged, what the README means) against fixtures. Use -Audit first, and treat Apply as unrehearsed.',
   },

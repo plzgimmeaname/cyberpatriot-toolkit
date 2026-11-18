@@ -823,7 +823,7 @@ Unregister-ScheduledTask -TaskName "BadTask" -Confirm:$false
 ### 14.3 Services that run strange programs
 - [ ] Done
 
-**Script:** 🔎 The script stops services that run from odd folders (asks first) and lists the others; check that list yourself.
+**Script:** 🔎 The script stops services that run from user folders (asks first), quotes unquoted paths with spaces, lists the others and reports service programs or folders that ordinary users can change; check that list yourself.
 
 ```powershell
 Get-CimInstance Win32_Service | Where-Object { $_.PathName -notmatch 'Windows\\|Program Files' } | Format-Table Name, State, PathName -AutoSize
