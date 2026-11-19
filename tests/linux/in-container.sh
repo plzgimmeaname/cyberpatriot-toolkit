@@ -29,6 +29,21 @@ bash harden.sh --audit --no-color --config "$CONF" >/tmp/audit1.txt 2>&1
 after=$(watched | md5sum)
 if [ "$before" = "$after" ]; then echo "PASS  audit mode changed nothing"; else echo "FAIL  audit mode changed files"; exit 1; fi
 echo "      audit found: $(grep -c '\[WOULD' /tmp/audit1.txt) WOULD, $(grep -c '\[REVIEW' /tmp/audit1.txt) REVIEW"
+# the audit must also SEE what apply later fixes or removes (the account is gone after apply)
+for c in 'grep -q "Duplicate user ID - UID .*twin" /tmp/audit1.txt' 'grep -q "private file(s) of bob" /tmp/audit1.txt'; do
+  if bash -c "$c" >/dev/null 2>&1; then echo "PASS  audit reports: $c"; else echo "FAIL  audit does not report: $c"; exit 1; fi
+done
+
+echo "== Robustness: refuses to run as a normal user; reads a config saved on Windows (BOM, CRLF, odd quoting)"
+rb_fail=0
+if su nobody -s /bin/bash -c "cd /repo/scripts/linux && bash harden.sh --apply --yes --no-color" 2>&1 | grep -q "run this as root"; then echo "PASS  non-root run is refused with a clear message"
+else echo "FAIL  non-root run was not refused clearly"; rb_fail=1; fi
+printf '\xef\xbb\xbfauthorized_admins = "alice"\r\nexport AUTHORIZED_USERS=bob carol dave   # a comment\r\nCRITICAL_SERVICES=\x27ssh apache2\x27\r\nNEW_PASSWORD="Cyb3r!Pa#tr1ot 2026"\r\nthis line is junk\r\n' >/tmp/win.conf
+bash harden.sh --audit --no-color --only users --config /tmp/win.conf >/tmp/win.txt 2>&1
+if grep -q 'Admins: *alice$' /tmp/win.txt && grep -q 'Standard users: *bob carol dave$' /tmp/win.txt && grep -q 'Critical services: *ssh apache2$' /tmp/win.txt && grep -q 'line ignored.*junk' /tmp/win.txt; then
+  echo "PASS  config with BOM, CRLF, lower-case key, export and quotes is read correctly"
+else echo "FAIL  config file saved on Windows was misread"; cat /tmp/win.txt; rb_fail=1; fi
+[ "$rb_fail" -eq 0 ] || exit 1
 
 echo "== No README user list: report only, never delete or demote (SUDO_USER=alice)"
 printf 'NEW_PASSWORD="skip"\nENABLE_LOCKOUT="no"\nFULL_UPGRADE="no"\n' >/tmp/no-readme.conf
@@ -58,6 +73,11 @@ grep -E '\[(FAILED)' /tmp/apply.txt | sed 's/^/      /' || true
 
 echo "== Verify"
 bash /repo/tests/linux/verify.sh || { echo "---- apply output ----"; cat /tmp/apply.txt; exit 1; }
+
+echo "== Second apply (idempotent: must not change anything again)"
+SUDO_USER=alice bash harden.sh --apply --yes --no-color --config "$CONF" >/tmp/apply2.txt 2>&1 || true
+if grep -q '^ *\[CHANGED' /tmp/apply2.txt; then echo "FAIL  a second apply run changed things again:"; grep '^ *\[CHANGED' /tmp/apply2.txt | cut -c1-200 | sed 's/^/      /'; exit 1
+else echo "PASS  second apply run changed nothing"; fi
 
 echo "== Second audit (should find little or nothing left)"
 SUDO_USER=alice bash harden.sh --audit --no-color --config "$CONF" >/tmp/audit2.txt 2>&1

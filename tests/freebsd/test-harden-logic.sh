@@ -223,6 +223,71 @@ rm -f "$FR/etc/crontab"
 reset_state; MODE=audit; echo "firewall_enable=YES" >"$T/rc"; SECTION=firewall; sec_firewall >/dev/null 2>&1
 check "ipfw being on is reported"                    'result_has "REVIEW|firewall|ipfw is on"'
 
+# --- v2.2 additions: checks the checklist promises ----------------------------
+echo "== config file: Windows line endings and spaces around ="
+reset_state
+printf 'AUTHORIZED_ADMINS = "alice bob"\r\nAUTHORIZED_USERS=carol  # comment\r\nCRITICAL_SERVICES=ssh apache\r\nFULL_UPGRADE=yes\r\nNEW_PASSWORD = '"'"'Cyb3r!Patr1ot#2026'"'"'\r\n' >"$T/crlf.conf"
+AUTHORIZED_ADMINS=""; AUTHORIZED_USERS=""; CRITICAL_SERVICES=""; FULL_UPGRADE=ask; NEW_PASSWORD=""
+load_config "$T/crlf.conf"
+check "quoted value after ' = ' is read"             '[ "$AUTHORIZED_ADMINS" = "alice bob" ]'
+check "unquoted value loses the comment and CR"      '[ "$AUTHORIZED_USERS" = carol ] && [ "$CRITICAL_SERVICES" = "ssh apache" ]'
+check "FULL_UPGRADE=yes survives CRLF"               '[ "$FULL_UPGRADE" = yes ]'
+check "single-quoted password with # is kept"        '[ "$NEW_PASSWORD" = "Cyb3r!Patr1ot#2026" ]'
+
+echo "== sudo/doas: rules for people who are not README admins"
+reset_state; MODE=audit; AUTHORIZED_ADMINS=alice; mkdir -p "$FR/usr/local/etc"
+printf 'permit setenv { -ENV PS1=$DOAS_PS1 } :wheel\npermit persist alice as root\npermit nopass mallory as root cmd id\n' >"$FR/usr/local/etc/doas.conf"
+SECTION=sudo; sec_sudo >/dev/null 2>&1
+check "reports the doas rule for mallory"            'result_has "REVIEW|sudo|doas.conf lets .mallory."'
+check "does not report :wheel or the admin alice"    '! result_has "doas.conf lets .:wheel." && ! result_has "doas.conf lets .alice."'
+rm -f "$FR/usr/local/etc/doas.conf"
+
+echo "== software: package repositories"
+reset_state; MODE=audit; mkdir -p "$FR/etc/pkg" "$FR/usr/local/etc/pkg/repos"
+printf 'FreeBSD: {\n  url: "pkg+https://pkg.FreeBSD.org/${ABI}/quarterly",\n  mirror_type: "srv",\n  signature_type: "fingerprints",\n  enabled: yes\n}\n' >"$FR/etc/pkg/FreeBSD.conf"
+SECTION=software; sec_software >/dev/null 2>&1
+check "the stock repository is fine"                 'result_has "OK|software|pkg uses only the official"'
+printf 'evil: {\n  url: "http://10.6.6.6/pkg",\n  signature_type: "none",\n  enabled: yes\n}\n' >"$FR/usr/local/etc/pkg/repos/evil.conf"
+: >"$RESULTS_FILE"; sec_software >/dev/null 2>&1
+check "a repository on an IP address is reported"    'result_has "REVIEW|software|Package repository settings"'
+printf 'evil: {\n  url: "http://10.6.6.6/pkg",\n  enabled: no\n}\n' >"$FR/usr/local/etc/pkg/repos/evil.conf"
+: >"$RESULTS_FILE"; sec_software >/dev/null 2>&1
+check "a disabled repository is ignored"             'result_has "OK|software|pkg uses only the official"'
+rm -f "$FR/usr/local/etc/pkg/repos/evil.conf"
+
+echo "== services: switched on in rc.conf.local"
+reset_state; MODE=audit; printf 'ntpd_enable="YES"\nsshd_enable="NO"\n' >"$FR/etc/rc.conf.local"
+SECTION=services; sec_services >/dev/null 2>&1
+check "lists the service enabled in rc.conf.local"   'result_has "REVIEW|services|Services switched on in /.*rc.conf.local" && grep -q "ntpd_enable" "$REPORT_FILE"'
+rm -f "$FR/etc/rc.conf.local"
+
+echo "== users: home folder owner and login shell"
+reset_state; MODE=audit; mkdir -p "$T/h/zed"; printf '/bin/sh\n' >"$FR/etc/shells"
+printf 'zed:*:1009:1009:zed:%s:/usr/local/bin/evilsh\n' "$T/h/zed" >>"$FR/etc/passwd"
+finalize_readme >/dev/null; SECTION=users; sec_users >/dev/null 2>&1
+check "a shell that is not in /etc/shells is reported" 'result_has "REVIEW|users|zed.s shell /usr/local/bin/evilsh is not listed"'
+check "a home folder owned by someone else is reported" 'result_has "REVIEW|users|.*/h/zed is owned by"'
+
+echo "== ssh: blacklistd running or not"
+reset_state; MODE=audit; echo "sshd_enable=YES" >"$T/rc"; CRITICAL_SERVICES=ssh; : >"$FR/etc/ssh/sshd_config"; SECTION=ssh; sec_ssh >/dev/null 2>&1
+check "blacklistd not running is reported"           'result_has "REVIEW|ssh|blacklistd is not running"'
+echo blacklistd >"$T/running"; : >"$RESULTS_FILE"; sec_ssh >/dev/null 2>&1
+check "blacklistd running is OK"                     'result_has "OK|ssh|blacklistd is running"'
+
+echo "== logging: syslogd and syslog.conf"
+reset_state; MODE=audit; echo syslogd >"$T/running"; printf '*.err\t\t/var/log/messages\n*.*\t\t/dev/null\n' >"$FR/etc/syslog.conf"
+SECTION=logging; sec_logging >/dev/null 2>&1
+check "running syslogd is OK"                        'result_has "OK|logging|syslogd is running"'
+check "a /dev/null destination is reported"          'result_has "REVIEW|logging|.*/etc/syslog.conf sends some logs to /dev/null"'
+rm -f "$FR/etc/syslog.conf"
+
+echo "== backdoors: PAM"
+reset_state; MODE=apply; ASSUME_YES=1; mkdir -p "$FR/etc/pam.d"; printf 'auth\tsufficient\tpam_permit.so\nauth\trequired\tpam_unix.so\n' >"$FR/etc/pam.d/sshd"
+SECTION=backdoors; comment_lines "$FR/etc/pam.d/sshd" '^[[:space:]]*auth[[:space:]]+(sufficient|\[success=done[^]]*\])[[:space:]]+pam_permit\.so'
+check "comment_lines disables the pam_permit line"   '! grep -E "^auth.*pam_permit" "$FR/etc/pam.d/sshd" && grep -q "pam_unix" "$FR/etc/pam.d/sshd" && [ -e "$BACKUP_DIR$FR/etc/pam.d/sshd" ]'
+reset_state; MODE=audit; printf 'auth\tsufficient\tpam_permit.so\n' >"$FR/etc/pam.d/sshd"; SECTION=backdoors; sec_backdoors >/dev/null 2>&1
+check "audit reports the pam_permit line"            'result_has "REVIEW|backdoors|Suspicious PAM line"'
+
 # --- kernel -----------------------------------------------------------------
 echo "== kernel: ip.forwarding applied now"
 reset_state; printf 'net.inet.ip.forwarding=1\nnet.inet.tcp.blackhole=0\n' >"$T/sysctl"; SECTION=kernel; sec_kernel >/dev/null 2>&1
@@ -251,6 +316,11 @@ if [ "$(id -u)" = 0 ] && /bin/mount -t tmpfs -o size=1m cptest "$T/fs/root/home"
 
   check "finds SUID find on the separate home file system" 'result_has "DANGEROUS: $MNT/bob/find"'
   check "finds SGID vi on the root file system"            'result_has "DANGEROUS: $T/fs/root/bin/vi"'
+  mkdir -p "$MNT/bob/pub"; chmod 777 "$MNT/bob/pub"; printf 'x\n' >"$FR/etc/rc.conf"; chmod 666 "$FR/etc/rc.conf"
+  : >"$RESULTS_FILE"; SECTION=permissions; sec_permissions >/dev/null 2>&1
+  check "a world-writable folder without sticky bit is reported" 'result_has "REVIEW|permissions|.*folder(s) anyone can write to have no sticky bit"'
+  check "a world-writable rc.conf is reported"             'result_has "REVIEW|permissions|.*cron/start-up file(s)"'
+
 else
   echo "skip  SUID scan across file systems (needs root and tmpfs)"
 fi

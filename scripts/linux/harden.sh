@@ -28,7 +28,7 @@
 
 if [ -z "${BASH_VERSION:-}" ]; then echo "Please run this script with bash:  sudo bash $0" >&2; exit 1; fi
 
-SCRIPT_VERSION="2.2.0"
+SCRIPT_VERSION="2.3.0"
 
 # ----------------------------------------------------------------------------
 # Settings (filled in from the command line, the config file, or prompts)
@@ -63,7 +63,9 @@ export DEBIAN_FRONTEND=noninteractive
 # The script reads the output of ufw, aa-status and other tools; in another
 # language those messages are translated and the checks would never match.
 export LC_ALL=C
-APT_OPTS=(-y -q -o DPkg::Lock::Timeout=180 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
+# The network timeouts keep a dead connection from stalling every apt call for minutes.
+APT_OPTS=(-y -q -o DPkg::Lock::Timeout=180 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold
+          -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::ftp::Timeout=30 -o Acquire::Retries=1)
 
 # Section id | title | function
 QUICK=0   # --quick: only the fast, high-value sections (an explicit --only wins)
@@ -100,7 +102,8 @@ setup_colors() {
   fi
 }
 
-_log() { printf '%s %s\n' "$(date '+%H:%M:%S')" "$*" >>"$LOG_FILE" 2>/dev/null; }
+# printf's %(...)T prints the time without starting a "date" process (these run thousands of times)
+_log() { printf '%(%H:%M:%S)T %s\n' -1 "$*" >>"$LOG_FILE" 2>/dev/null; }
 
 say()  { printf '%s\n' "$*"; _log "$*"; }
 info() { printf '%s  *%s %s\n' "$C_BLU" "$C_RST" "$*"; _log "INFO   $*"; }
@@ -118,6 +121,7 @@ header() {
 #   WOULD   audit mode: would fix   SKIPPED  not done (your choice / not relevant)
 #   FAILED  tried and failed        REVIEW   a human needs to look at this
 RESULTS=()
+SECTION_TIMES=()    # "milliseconds|section", one per section that ran (shown in the summary)
 CURRENT_SECTION="setup"
 
 result() {
@@ -190,7 +194,7 @@ log_init() {
 record() {
   local topic=$1 kind=$2
   shift 2
-  printf '%s\t%s\t%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$kind" "$*" >>"$LOG_DIR/$topic.txt" 2>/dev/null
+  printf '%(%Y-%m-%d %H:%M:%S)T\t%s\t%s\n' -1 "$kind" "$*" >>"$LOG_DIR/$topic.txt" 2>/dev/null
 }
 
 # remove_files "reason" FILE...
@@ -201,11 +205,16 @@ remove_files() {
   local reason=$1
   shift
   local kind=deleted f
+  local -a real=()
   [[ $MODE == audit ]] && kind=would-delete
+  # Only absolute paths that exist: a file name with a newline in it is listed as two
+  # lines, and the second half ("x.mp3") would be deleted relative to the current folder.
   for f in "$@"; do
-    [[ -e $f ]] || continue
+    [[ $f == /* && ( -e $f || -L $f ) ]] || continue
+    real+=("$f")
     record 06-files-deleted "$kind" "$reason|$f|$(stat -c '%s bytes %U:%G %a' "$f" 2>/dev/null)"
   done
+  set -- "${real[@]}"
   [[ $# -eq 0 ]] && return 0
   if [[ $MODE == audit ]]; then result WOULD "Delete $# file(s): $reason"; return 0; fi
   fix "Deleted $# file(s): $reason" rm -f -- "$@"
@@ -440,8 +449,17 @@ stage_commit() {
   fi
   backup "$file"
   local existed=1
-  [[ -f $file ]] || { existed=0; mkdir -p "$(dirname "$file")"; install -m 644 /dev/null "$file"; }
-  cat "$STAGE_TMP" >"$file"
+  # a read-only file system or a full disk makes these fail: say so instead of reporting CHANGED
+  if [[ ! -f $file ]]; then
+    existed=0
+    if ! { mkdir -p "$(dirname "$file")" && install -m 644 /dev/null "$file"; } 2>>"$LOG_FILE"; then
+      rm -f "$STAGE_TMP"; result FAILED "$desc (cannot create $file - read-only file system?)"; return 1
+    fi
+  fi
+  if ! cat "$STAGE_TMP" >"$file" 2>>"$LOG_FILE"; then
+    if [[ $existed -eq 1 ]]; then restore "$file" 2>/dev/null; else rm -f "$file" 2>/dev/null; fi
+    rm -f "$STAGE_TMP"; result FAILED "$desc (cannot write $file - read-only file system or full disk? see log)"; return 1
+  fi
   rm -f "$STAGE_TMP"
   if [[ $# -gt 0 ]] && ! run "$@"; then
     if [[ $existed -eq 1 ]]; then restore "$file"; else rm -f "$file"; fi
@@ -510,11 +528,14 @@ pkg_installed() {
 }
 
 APT_UPDATED=0
+APT_UPDATE_FAILED=0
 apt_update_once() {
   [[ $APT_UPDATED -eq 1 ]] && return 0
+  [[ $APT_UPDATE_FAILED -eq 1 ]] && return 1   # once is enough: every retry would wait for the same timeout
   info "Refreshing the package lists (apt-get update). This can take a minute..."
   if run apt-get "${APT_OPTS[@]}" update; then APT_UPDATED=1; return 0; fi
-  warn "apt-get update failed - is the internet working? Package installs may fail."
+  APT_UPDATE_FAILED=1
+  warn "apt-get update failed - is the internet working? Installing packages will be skipped."
   return 1
 }
 
@@ -524,7 +545,11 @@ ensure_pkg() {
   for p in "${@:1:$#-1}"; do pkg_installed "$p" || missing+=("$p"); done
   [[ ${#missing[@]} -eq 0 ]] && return 0
   if [[ $MODE == audit ]]; then result WOULD "Install ${missing[*]} ($reason)"; return 1; fi
-  apt_update_once
+  if ! apt_update_once && [[ $APT_UPDATE_FAILED -eq 1 ]]; then
+    # no network: only packages already in the local cache can be installed (fails at once, no long wait)
+    fix "Install ${missing[*]} ($reason) - no network, using only the local package cache" apt-get "${APT_OPTS[@]}" --no-download install "${missing[@]}"
+    return
+  fi
   fix "Install ${missing[*]} ($reason)" apt-get "${APT_OPTS[@]}" install "${missing[@]}"
 }
 
@@ -566,9 +591,13 @@ load_config() {
   local file=$1 line key val
   [[ -r $file ]] || die "Cannot read config file: $file"
   while IFS= read -r line || [[ -n $line ]]; do
+    line=${line%$'\r'}                  # a file saved on Windows ends every line with CR
+    line=${line#$'\xef\xbb\xbf'}        # ... and Notepad starts the file with a byte-order mark
     [[ $line =~ ^[[:space:]]*(#|$) ]] && continue
-    [[ $line =~ ^[[:space:]]*([A-Z_]+)[[:space:]]*=[[:space:]]*(.*)$ ]] || continue
-    key=${BASH_REMATCH[1]}; val=${BASH_REMATCH[2]}
+    if ! [[ $line =~ ^[[:space:]]*(export[[:space:]]+)?([A-Za-z_]+)[[:space:]]*=[[:space:]]*(.*)$ ]]; then
+      warn "Config file line ignored (not KEY=value): $line"; continue
+    fi
+    key=${BASH_REMATCH[2]^^}; val=${BASH_REMATCH[3]}
     # Quoted values are taken exactly (a password may contain '#'). Unquoted values
     # may have a trailing " # comment".
     if [[ $val =~ ^\"([^\"]*)\" ]]; then val=${BASH_REMATCH[1]}
@@ -647,8 +676,14 @@ show_readme_summary() {
 # SECTION: Users and groups
 # ============================================================================
 delete_user() { # kill the user's processes, then remove the account (home is kept)
-  pkill -KILL -u "$1" 2>/dev/null
-  sleep 1
+  # An account that shares its user ID with another account (a planted duplicate) must not
+  # kill by ID: that would also kill the real user's session, and the terminal running this script.
+  local uid
+  uid=$(id -u "$1" 2>/dev/null)
+  if [[ -n $uid && $(awk -F: -v u="$uid" '$3==u' /etc/passwd | wc -l) -le 1 ]]; then
+    pkill -KILL -u "$1" 2>/dev/null
+    sleep 1
+  fi
   userdel "$1" 2>/dev/null || userdel -f "$1"
 }
 
@@ -679,6 +714,19 @@ sec_users() {
       fix "Deleted hidden root account $u" userdel -f "$u"
     fi
   done
+
+  info "Looking for accounts that share a user ID, a name or a group ID"
+  why "Two accounts with the same UID are the same person to the system (a hidden copy of a real user). Only the README decides which one is real."
+  local -a dupuid dupname dupgid gid0
+  mapfile -t dupuid  < <(awk -F: '$3!=0 {n[$3]++; w[$3]=w[$3] " " $1} END{for (i in n) if (n[i]>1) print "UID " i ":" w[i]}' /etc/passwd)
+  mapfile -t dupname < <(cut -d: -f1 /etc/passwd | sort | uniq -d)
+  mapfile -t dupgid  < <(awk -F: '{n[$3]++; w[$3]=w[$3] " " $1} END{for (i in n) if (n[i]>1) print "GID " i ":" w[i]}' /etc/group)
+  mapfile -t gid0    < <(awk -F: '$4==0 && $1!="root" && $1!="sync" && $1!="shutdown" && $1!="halt" && $1!="operator" {print $1}' /etc/passwd)
+  for line in "${dupuid[@]}"; do result REVIEW "Duplicate user ID - ${line}: both accounts act as the same user (delete the one the README does not list)"; done
+  for line in "${dupname[@]}"; do result REVIEW "The user name '$line' appears twice in /etc/passwd (check it with: sudo pwck -r)"; done
+  for line in "${dupgid[@]}"; do result REVIEW "Duplicate group ID - ${line}"; done
+  for line in "${gid0[@]}"; do result REVIEW "Account '$line' has root's group (GID 0) as its primary group"; done
+  [[ ${#dupuid[@]}${#dupname[@]}${#dupgid[@]}${#gid0[@]} == 0000 ]] && result OK "No duplicate user IDs, names or group IDs"
 
   info "Comparing user accounts with the README"
   why "Every account that is not in the README is a way in for an attacker."
@@ -802,6 +850,16 @@ password_is_strong() {
   [[ ${#p} -ge 12 && $p =~ [A-Z] && $p =~ [a-z] && $p =~ [0-9] && $p =~ [^A-Za-z0-9] ]]
 }
 
+# user_has_password USER PASSWORD: does the password already match USER's hash? (a second run must not
+# "change" passwords that are already right). Without perl the answer is "no" and the password is set again.
+user_has_password() {
+  local hash
+  hash=$(getent shadow "$1" 2>/dev/null | cut -d: -f2)
+  [[ $hash == \$* ]] || return 1
+  have perl || return 1
+  [[ $(PW=$2 perl -e 'print crypt($ENV{PW}, $ARGV[0])' "$hash" 2>/dev/null) == "$hash" ]]
+}
+
 set_user_passwords() {
   local u targets=() p1 p2
   info "Setting strong passwords for the other users"
@@ -834,6 +892,7 @@ set_user_passwords() {
     result FAILED "NEW_PASSWORD in the config file is too weak (need 12+ chars, upper, lower, number, symbol)"; return
   fi
   for u in "${targets[@]}"; do
+    if user_has_password "$u" "$NEW_PASSWORD"; then result OK "$u already has the new password"; continue; fi
     _log "RUN    chpasswd ($u)"
     if printf '%s:%s\n' "$u" "$NEW_PASSWORD" | chpasswd 2>>"$LOG_FILE"; then
       result CHANGED "Set a strong password for $u"
@@ -868,7 +927,13 @@ sec_passwords() {
   stage_set "pass_warn_age[ \t]" "PASS_WARN_AGE	14"
   enc=$(awk 'toupper($1)=="ENCRYPT_METHOD"{print toupper($2)}' /etc/login.defs)
   if [[ -z $enc || $enc == DES || $enc == MD5 ]]; then stage_set "encrypt_method[ \t]" "ENCRYPT_METHOD SHA512"; fi
-  stage_commit "Password aging defaults (login.defs)"
+  stage_set "umask[ \t]" "UMASK		027"
+  stage_commit "Password aging defaults and default umask 027 (login.defs)"
+  if [[ -f /etc/default/useradd ]]; then
+    stage_begin /etc/default/useradd
+    stage_set "inactive[ \t]*=" "INACTIVE=30"
+    stage_commit "New accounts are disabled 30 days after their password expires (/etc/default/useradd)"
+  fi
 
   info "Applying the age rules to existing users (chage)"
   why "login.defs only affects NEW users. Existing users need chage."
@@ -1103,7 +1168,7 @@ sec_firewall() {
   else
     fix "Turn on UFW" ufw --force enable
   fi
-  if grep -Eq "^Logging: on" <<<"$status"; then
+  if grep -Eq "^Logging: on" <<<"$status" || grep -Eq '^LOGLEVEL=(low|medium|high|full)' /etc/ufw/ufw.conf 2>/dev/null; then
     result OK "Firewall logging is on"
   else
     fix "Turn on firewall logging" ufw logging on
@@ -1602,7 +1667,7 @@ sec_files() {
   local -a roots; mapfile -t roots < <(scan_roots)
 
   # Every common audio and video container, plus torrent and playlist files.
-  mapfile -t media < <(find "${roots[@]}" -xdev \( "${prune[@]}" \) -prune -o -type f \( \
+  mapfile -d '' -t media < <(find "${roots[@]}" -xdev \( "${prune[@]}" \) -prune -o -type f \( \
       -iname '*.mp3' -o -iname '*.mp4' -o -iname '*.m4a' -o -iname '*.m4b' -o -iname '*.m4v' -o -iname '*.m4p' \
       -o -iname '*.wav' -o -iname '*.wma' -o -iname '*.wmv' -o -iname '*.flac' -o -iname '*.aac' -o -iname '*.ogg' \
       -o -iname '*.oga' -o -iname '*.ogv' -o -iname '*.ogm' -o -iname '*.ogx' -o -iname '*.opus' -o -iname '*.avi' \
@@ -1613,7 +1678,7 @@ sec_files() {
       -o -iname '*.mpa' -o -iname '*.spx' -o -iname '*.ape' -o -iname '*.wv' -o -iname '*.tta' -o -iname '*.dsf' \
       -o -iname '*.dff' -o -iname '*.divx' -o -iname '*.xvid' -o -iname '*.mka' -o -iname '*.mid' \
       -o -iname '*.midi' -o -iname '*.torrent' -o -iname '*.m3u' -o -iname '*.m3u8' -o -iname '*.pls' -o -iname '*.cue' \
-      \) -print 2>/dev/null | sort -u)
+      \) -print0 2>/dev/null | sort -zu)   # NUL-separated: a newline in a file name must not split it
 
   # Media with no extension (the file command knows what it is).
   if have file; then
@@ -1625,14 +1690,14 @@ sec_files() {
   fi
 
   # Password lists, packet captures, database dumps, VPN profiles and key material.
-  mapfile -t data < <(find /home /root /srv /opt /tmp /var/tmp /var/www -xdev -type f \( \
+  mapfile -d '' -t data < <(find /home /root /srv /opt /tmp /var/tmp /var/www -xdev -type f \( \
       -iname '*.pcap' -o -iname '*.pcapng' -o -iname '*.cap' -o -iname '*password*' -o -iname '*passwd*' -o -iname '*shadow*' \
       -o -iname '*creditcard*' -o -iname '*credit_card*' -o -iname '*ssn*' -o -iname '*.kdbx' -o -iname '*.kdb' \
       -o -iname 'rockyou*' -o -iname '*wordlist*' -o -iname '*hashes*' -o -iname '*hashlist*' -o -iname '*.pot' \
       -o -iname '*.sql' -o -iname '*.dump' -o -iname '*.ovpn' -o -iname '*.rdp' -o -iname 'id_rsa' -o -iname 'id_dsa' \
       -o -iname 'id_ecdsa' -o -iname '*.pem' -o -iname '*.pfx' -o -iname '*.p12' \) \
       -not -path '*/.mozilla/*' -not -path '*/.cache/*' -not -path '*/.config/*' -not -path '*/.local/*' \
-      -not -path '/usr/share/*' -not -path "$WORK_DIR/*" -print 2>/dev/null | sort -u)
+      -not -path '/usr/share/*' -not -path "$WORK_DIR/*" -print0 2>/dev/null | sort -zu)
 
   # Hidden files and executable files in the folders anyone can write to.
   mapfile -t hidden < <(find /tmp /var/tmp /dev/shm /run/shm -xdev -maxdepth 2 \( -name '.*' -o -type f -perm -u+x \) -print 2>/dev/null \
@@ -1816,6 +1881,28 @@ sec_kernel() {
     stage_ini Coredump ProcessSizeMax 0
     stage_commit "systemd-coredump keeps no core dumps (coredump.conf)"
   fi
+
+  info "Shared memory (/dev/shm)"
+  why "/dev/shm is writable by everyone, so programs and SUID files dropped there must not be allowed to run: nodev, nosuid, noexec."
+  if [[ -f /etc/fstab ]]; then
+    stage_begin /etc/fstab
+    if grep -Eq '^[[:space:]]*[^#[:space:]][^[:space:]]*[[:space:]]+/dev/shm[[:space:]]' "$STAGE_TMP"; then
+      local out; out=$(mktemp)
+      awk '
+        $0 !~ /^[ \t]*#/ && $2 == "/dev/shm" && NF >= 4 {
+          n = split($4, o, ","); r = ""
+          for (i = 1; i <= n; i++) if (o[i] != "exec" && o[i] != "suid" && o[i] != "dev" && o[i] != "nodev" && o[i] != "nosuid" && o[i] != "noexec" && o[i] != "") r = r (r == "" ? "" : ",") o[i]
+          $4 = (r == "" ? "defaults" : r) ",nodev,nosuid,noexec"; $1 = $1; print; next }
+        { print }' "$STAGE_TMP" >"$out" && cat "$out" >"$STAGE_TMP"; rm -f "$out"
+      [[ $(cat "$STAGE_TMP") != "$(cat /etc/fstab)" ]] && STAGE_CHANGES+=("/dev/shm: nodev,nosuid,noexec")
+    else
+      printf 'tmpfs\t/dev/shm\ttmpfs\tdefaults,nodev,nosuid,noexec\t0\t0\n' >>"$STAGE_TMP"
+      STAGE_CHANGES+=("add /dev/shm tmpfs nodev,nosuid,noexec")
+    fi
+    stage_commit "/dev/shm cannot run programs (nodev,nosuid,noexec in /etc/fstab)"
+    # also now, not only after the next boot (fails quietly where the mount cannot be changed, e.g. in a container)
+    if [[ $MODE == apply && $(last_status) == CHANGED ]]; then run mount -o remount,nodev,nosuid,noexec /dev/shm; fi
+  fi
 }
 
 # ============================================================================
@@ -1881,6 +1968,14 @@ sec_permissions() {
       fix "$home: remove access for other users (was $mode)" chmod o-rwx "$home"
     else
       result OK "$home is private ($mode)"
+    fi
+    # private keys, the keys folder and the command history must not be readable by other users
+    local -a loose=()
+    [[ -d $home/.ssh && ! -L $home/.ssh ]] && mapfile -t loose < <(find "$home/.ssh" -maxdepth 1 \( -type d -o -type f ! -name '*.pub' \) -perm /077 2>/dev/null)
+    [[ -f $home/.bash_history && ! -L $home/.bash_history && -n $(find "$home/.bash_history" -maxdepth 0 -perm /077 2>/dev/null) ]] && loose+=("$home/.bash_history")
+    if [[ ${#loose[@]} -gt 0 ]]; then
+      result REVIEW "${#loose[@]} private file(s) of $u can be read by others: ${loose[*]}"
+      fix "Made $u's .ssh files and shell history private (chmod go-rwx)" chmod go-rwx -- "${loose[@]}"
     fi
   done < <(awk -F: -v lo="${umin:-1000}" -v hi="${umax:-60000}" '$3>=lo && $3<=hi {print $1, $6}' /etc/passwd)
 
@@ -2121,6 +2216,12 @@ inventory_network() {
     result OK "Nothing is listening on the network"
   else
     result REVIEW "${#listeners[@]} listening socket(s) - the full list with the owning program is in $LOG_DIR/07-open-ports.txt"
+    local -a listen_lines=()
+    for line in "${listeners[@]}"; do
+      IFS='|' read -r proto addr peer proc <<<"$line"
+      listen_lines+=("$proto $addr -> $(grep -oE 'users:\(\("[^"]+' <<<"$proc" | head -1 | sed 's/.*("//')")
+    done
+    report_detail "${listen_lines[@]}"
   fi
   if [[ ${#exposed[@]} -gt 0 ]]; then
     result REVIEW "${#exposed[@]} port(s) listening for other computers are not for a service the README lists - close them if nothing needs them"
@@ -2184,6 +2285,7 @@ inventory_processes() {
     elif [[ $exe == *' (deleted)' ]]; then
       flagged+=("PID $pid ($user) runs a program whose file was deleted: $exe: $args")
     elif [[ -z $exe && -n $args ]]; then
+      # shellcheck disable=SC2010  # only the error text is wanted
       if ls -l "/proc/$pid/exe" 2>&1 | grep -qi 'permission denied'; then continue; fi
       flagged+=("PID $pid ($user) has no program file on disk (memory-only): $args")
     elif grep -Eq "$RE_BADPROC" <<<"$name"; then
@@ -2524,15 +2626,19 @@ sec_backdoors() {
     fi
   fi
 
-  info "Checking system programs for tampering (dpkg --verify). This takes about a minute..."
+  info "Checking system programs for tampering (checksums of the programs in /bin, /sbin, /usr/bin, /usr/sbin, libexec and the PAM modules)"
   why "Attackers replace programs like 'ls' or 'sudo' with versions that hide them or steal passwords."
   local -a modified
-  mapfile -t modified < <(dpkg --verify 2>/dev/null | awk 'NF==2 && $1 ~ /^..5/ {print $2}' | grep -E '^/(usr/)?(s?bin|lib|lib64|libexec)/')
+  # Only the files an attacker swaps are checked, straight from each package's md5sums list: a full
+  # "dpkg --verify" also reads every library and data file (about a minute on a desktop image).
+  mapfile -t modified < <(cd / && grep -hE '^[0-9a-f]{32}  (usr/)?(s?bin|libexec)/|^[0-9a-f]{32}  (usr/)?lib[^ ]*/security/[^/ ]+\.so$|^[0-9a-f]{32}  usr/lib/sudo/' /var/lib/dpkg/info/*.md5sums 2>/dev/null \
+      | md5sum -c --quiet 2>/dev/null | sed -n 's/: FAILED$//p' | sed 's#^#/#' | grep -vxFf <(dpkg-divert --list 2>/dev/null | sed -n 's/^\(local \)\{0,1\}diversion of \(.*\) to .*/\2/p'))   # diverted files (Mint's /usr/bin/man) are meant to differ
   if [[ ${#modified[@]} -eq 0 ]]; then result OK "System programs match their packages"; else
     result REVIEW "${#modified[@]} system file(s) were changed after installation"
     show_list 10 "${modified[@]}"
     local pkgs
-    pkgs=$(for f in "${modified[@]}"; do dpkg -S "$f" 2>/dev/null | cut -d: -f1; done | tr ',' '\n' | awk 'NF && !s[$1]++{print $1}' | tr '\n' ' ')
+    # dpkg -S also prints "diversion by ..." lines: keep only the "package: /path" lines, without ":arch"
+    pkgs=$(for f in "${modified[@]}"; do dpkg -S "$f" 2>/dev/null | sed -n 's/^\([a-z0-9][a-z0-9+.-]*\)\(:[a-z0-9]*\)\{0,1\}: \/.*/\1/p'; done | awk 'NF && !s[$1]++{print $1}' | tr '\n' ' ')
     if [[ -n $pkgs ]] && ask "Reinstall the package(s) to restore the original files? ($pkgs)" y; then
       apt_update_once
       # shellcheck disable=SC2086
@@ -2610,10 +2716,17 @@ sec_apparmor() {
     result OK "AppArmor is enabled in the kernel"
   else
     result REVIEW "AppArmor is NOT enabled in the kernel (or this is a container)"
-    if [[ -f /etc/default/grub ]] && grep -Eq 'apparmor=0|security=[a-z]+' /etc/default/grub; then
+    if [[ -f /etc/default/grub ]] && grep -Eq 'apparmor=0|security=(selinux|tomoyo|smack|none)' /etc/default/grub; then
       stage_begin /etc/default/grub
-      stage_sed 's/[[:space:]]*(apparmor=0|security=[a-z]+)//g' "remove apparmor=0 / security= from the boot options"
+      stage_sed 's/[[:space:]]*(apparmor=0|security=(selinux|tomoyo|smack|none))//g' "remove apparmor=0 / security=selinux from the boot options"
       stage_commit "Boot options in /etc/default/grub"
+      if [[ $(last_status) == CHANGED ]]; then fix "Update the boot loader (takes effect after a reboot)" update-grub; fi
+    fi
+    # Debian's kernel has AppArmor built in but only turns it on when asked (Ubuntu and Mint do it by default)
+    if [[ $IS_DEBIAN -eq 1 && $IS_UBUNTU -eq 0 && $IS_MINT -eq 0 && -f /etc/default/grub ]] && ! grep -Eq '^[[:space:]]*GRUB_CMDLINE_LINUX(_DEFAULT)?=.*apparmor=1' /etc/default/grub; then
+      stage_begin /etc/default/grub
+      stage_sed 's/^([[:space:]]*GRUB_CMDLINE_LINUX_DEFAULT=")([^"]*)"/\1\2 apparmor=1 security=apparmor"/' "boot with apparmor=1 security=apparmor"
+      stage_commit "AppArmor on at boot (Debian, /etc/default/grub)"
       if [[ $(last_status) == CHANGED ]]; then fix "Update the boot loader (takes effect after a reboot)" update-grub; fi
     fi
   fi
@@ -3328,6 +3441,11 @@ print_summary() {
       case ${r%%|*} in REVIEW|WOULD) r=${r#*|}; printf '%s\n' "${r%%|*}" ;; esac
     done | sort | uniq -c | while read -r n sec; do say "    $sec: $n"; done
   fi
+  if [[ ${#SECTION_TIMES[@]} -gt 0 ]]; then
+    local t line=""
+    while IFS='|' read -r t r; do line+="$r $((t / 1000)).$(printf '%01d' $((t % 1000 / 100)))s  "; done < <(printf '%s\n' "${SECTION_TIMES[@]}" | sort -t'|' -k1,1nr | head -6)
+    say "  Slowest sections: $line"
+  fi
   say "  Finished in $((SECONDS - START_SECONDS))s."
   say ""
   write_findings_json
@@ -3351,7 +3469,13 @@ run_section() {
     CURRENT_SECTION=$id
     header "$title   [${MODE^^}]"
     printf '\n## %s\n\n' "$title" >>"$REPORT_FILE"
+    local t0=${EPOCHREALTIME:-$SECONDS} t1 ms
     "$fn"
+    t1=${EPOCHREALTIME:-$SECONDS}
+    if [[ -n ${EPOCHREALTIME:-} ]]; then t0=${t0/[.,]/}; t1=${t1/[.,]/}; ms=$(( (10#$t1 - 10#$t0) / 1000 ))
+    else ms=$(( (t1 - t0) * 1000 )); fi
+    SECTION_TIMES+=("$ms|$id")
+    _log "TIME   section $id took ${ms} ms"
     CURRENT_SECTION="setup"
     return 0
   done

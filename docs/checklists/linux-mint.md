@@ -1069,7 +1069,7 @@ grep -n 'pam_permit' /etc/pam.d/common-auth # "auth sufficient pam_permit.so" = 
 ### 13.8 Tampered system programs
 - [ ] Done
 
-**Script:** 🔎 The script reinstalls packages whose programs were changed (it asks first); other changed files in the `dpkg --verify` output are up to you.
+**Script:** 🔎 The script reinstalls packages whose programs were changed (it asks first); it checks the programs in `/bin`, `/sbin`, `/usr/bin`, `/usr/sbin` and the PAM modules, so changed libraries and data files (`dpkg --verify` shows them) are up to you.
 
 ```bash
 sudo dpkg --verify | grep -v ' c '           # takes a minute or two; lines with a 5 = changed file

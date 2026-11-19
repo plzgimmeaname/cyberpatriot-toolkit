@@ -21,7 +21,7 @@
 #  Logs and backups: /root/cyberpatriot/
 # =============================================================================
 
-VERSION="2.1.0"
+VERSION="2.2.0"
 QUICK=0
 MODE=""; ASSUME_YES=0; CONFIG_FILE=""; ONLY=""
 AUTHORIZED_USERS=""; AUTHORIZED_ADMINS=""; CRITICAL_SERVICES=""; NEW_PASSWORD=""; FULL_UPGRADE="ask"; EXTRA_PORTS=""
@@ -139,6 +139,14 @@ set_conf() {
   result CHANGED "$_new  ($_file)"
 }
 
+# comment_lines FILE ERE   comment out every active line of FILE that matches ERE (backs the file up first)
+comment_lines() {
+  _cl_t=$(mktemp)
+  RE=$2 awk '$0 !~ /^[ \t]*#/ && $0 ~ ENVIRON["RE"] { print "# " $0 "   # disabled by harden.sh"; next } { print }' "$1" >"$_cl_t" \
+    && backup "$1" && cat "$_cl_t" >"$1"
+  _cl_r=$?; rm -f "$_cl_t"; return $_cl_r
+}
+
 # sysrc helper: set_rc VAR VALUE "description"
 set_rc() {
   _cur=$(sysrc -n "$1" 2>/dev/null)
@@ -154,11 +162,14 @@ human_users() { awk -F: '$3 >= 1000 && $3 < 65534 { print $1 }' /etc/passwd; }
 
 load_config() {
   [ -r "$1" ] || { echo "Cannot read $1"; exit 1; }
+  _cr=$(printf '\r')
   while IFS= read -r _line || [ -n "$_line" ]; do
+    _line=${_line%"$_cr"}   # a config file saved on Windows ends every line with CR
     case $_line in ''|'#'*) continue ;; esac
     _k=${_line%%=*}; _v=${_line#*=}
     _k=$(printf '%s' "$_k" | tr -d '[:space:]')
-    case $_v in \"*\"*) _v=${_v#\"}; _v=${_v%%\"*} ;; \'*\'*) _v=${_v#\'}; _v=${_v%%\'*} ;; *) _v=${_v%% #*} ;; esac
+    _v=${_v#"${_v%%[![:space:]]*}"}   # spaces around the = sign
+    case $_v in \"*\"*) _v=${_v#\"}; _v=${_v%%\"*} ;; \'*\'*) _v=${_v#\'}; _v=${_v%%\'*} ;; *) _v=${_v%% #*}; _v=${_v%"${_v##*[![:space:]]}"} ;; esac
     case $_k in
       AUTHORIZED_USERS) AUTHORIZED_USERS=$_v ;; AUTHORIZED_ADMINS) AUTHORIZED_ADMINS=$_v ;;
       CRITICAL_SERVICES) CRITICAL_SERVICES=$_v ;; NEW_PASSWORD) NEW_PASSWORD=$_v ;;
@@ -259,6 +270,19 @@ sec_users() {
     fi
     result REVIEW "Account '$_u' has an EMPTY password"
     ask "Lock '$_u' until it gets a real password?" y && fix "Locked $_u" pw lock "$_u"
+  done
+
+  info "Home folders and login shells"
+  why "A home folder owned by somebody else costs that user their files; a shell that is not in /etc/shells cannot log in."
+  awk -F: '$3 >= 1000 && $3 < 65534 { print $1 " " $6 " " $7 }' /etc/passwd | while read -r _u _h _sh; do
+    if [ -d "$_h" ] && [ "$(stat -f '%Su' "$_h" 2>/dev/null)" != "$_u" ]; then
+      result REVIEW "$_h is owned by '$(stat -f '%Su' "$_h")', not '$_u'"
+      ask "Give $_h back to $_u?" y && fix "chown $_u $_h" chown "$_u" "$_h"
+    fi
+    case $_sh in
+      ''|/usr/sbin/nologin|/sbin/nologin) ;;
+      *) grep -qx "$_sh" /etc/shells 2>/dev/null || result REVIEW "$_u's shell $_sh is not listed in /etc/shells (it cannot log in, or the shell is a fake)" ;;
+    esac
   done
 
   info "Strong passwords for the other users"
@@ -412,6 +436,8 @@ sec_ssh() {
   fi
   set_rc blacklistd_enable YES "blacklistd blocks SSH password guessing"
   [ "$MODE" = apply ] && run service blacklistd start
+  if service blacklistd onestatus >/dev/null 2>&1; then result OK "blacklistd is running (it blocks SSH password guessing)"
+  else result REVIEW "blacklistd is not running (start it with: service blacklistd start)"; fi
   if [ -f /etc/pf.conf ] && ! grep -Eq '^[[:space:]]*anchor[[:space:]]+"blacklistd/\*"' /etc/pf.conf; then
     result REVIEW "blacklistd can only block through pf: add the line  anchor \"blacklistd/*\" in  to /etc/pf.conf, then run: pfctl -f /etc/pf.conf"
   fi
@@ -452,6 +478,10 @@ sec_services() {
   fi
   set_rc clear_tmp_enable YES "/tmp is emptied at every boot"
   set_rc dumpdev NO "No crash dumps (they can contain passwords)"
+  if grep -Ei '^[[:space:]]*[A-Za-z0-9_]+_enable[[:space:]]*=[[:space:]]*"?(YES|ON|TRUE|1)"?' /etc/rc.conf.local >"$WORK_DIR/s.tmp" 2>/dev/null && [ -s "$WORK_DIR/s.tmp" ]; then
+    result REVIEW "Services switched on in /etc/rc.conf.local (compare each one with the README)"; show_file_list "$WORK_DIR/s.tmp" 15
+  fi
+  rm -f "$WORK_DIR/s.tmp"
   result REVIEW "All enabled services: $(service -e 2>/dev/null | xargs -n1 basename 2>/dev/null | tr '\n' ' ')"
 }
 
@@ -482,6 +512,16 @@ sec_software() {
     result REVIEW "Vulnerable packages (the updates section can upgrade them)"; show_file_list "$WORK_DIR/pkgaudit2.txt" 10
   else result OK "pkg audit found no known-vulnerable packages"; fi
   rm -f "$WORK_DIR"/pkgaudit*.txt
+  info "Package repositories (a planted repository can serve malware as an update)"
+  for _f in /etc/pkg/*.conf /usr/local/etc/pkg/repos/*.conf; do
+    [ -f "$_f" ] || continue
+    grep -Eiq '^[[:space:]]*enabled[[:space:]]*:[[:space:]]*"?(no|false)' "$_f" && continue
+    grep -Ei '^[[:space:]]*url[[:space:]]*:' "$_f" | grep -viE '://([a-z0-9-]+\.)*freebsd\.org([:/"]|$)' | sed "s|^|$_f: |"
+    grep -Ei '^[[:space:]]*signature_type[[:space:]]*:[[:space:]]*"?none' "$_f" | sed "s|^|$_f: |"
+  done >"$WORK_DIR/repos.tmp"
+  if [ -s "$WORK_DIR/repos.tmp" ]; then result REVIEW "Package repository settings that are not the official FreeBSD one (or turn signature checking off)"; show_file_list "$WORK_DIR/repos.tmp" 10
+  else result OK "pkg uses only the official FreeBSD repository"; fi
+  rm -f "$WORK_DIR/repos.tmp"
   _locked=$(pkg query -e '%k == 1' '%n-%v' 2>/dev/null | tr '\n' ' ')
   if [ -n "$_locked" ]; then result REVIEW "Locked packages (pkg upgrade skips them; unlock with: pkg unlock -y NAME): $_locked"
   else result OK "No locked packages"; fi
@@ -569,6 +609,31 @@ sec_permissions() {
     if ask "Remove 'everyone can write' from these files?" y; then fix "Removed world-write from the files listed in the report" sh -c "tr '\n' '\0' <'$_l' | xargs -0 chmod o-w"; fi
   else result OK "No world-writable files"; fi
   rm -f "$_l"
+  info "World-writable folders without the sticky bit (users can delete each other's files)"
+  _l=$WORK_DIR/wwd.txt
+  _mps=$(mount -p -t ufs,zfs,tmpfs 2>/dev/null | awk '{ print $2 }')
+  for _mp in ${_mps:-/}; do
+    find "$_mp" -xdev \( -path /tmp -o -path /var/tmp -o -path /dev -o -path /proc -o -path /var/run -o -path "$WORK_DIR" \) -prune -o -type d -perm -0002 ! -perm -1000 -print 2>/dev/null
+  done | sort -u >"$_l"
+  if [ -s "$_l" ]; then
+    result REVIEW "$(wc -l <"$_l" | tr -d ' ') folder(s) anyone can write to have no sticky bit"; show_file_list "$_l" 10
+    if ask "Add the sticky bit to these folders?" y; then fix "Added the sticky bit to the folders listed in the report" sh -c "tr '\n' '\0' <'$_l' | xargs -0 chmod +t"; fi
+  else result OK "Every world-writable folder has the sticky bit"; fi
+  rm -f "$_l"
+
+  info "Cron tables and start-up files that group or others can write"
+  why "If a normal user can edit a cron table or an rc script, they get root the next time it runs."
+  _l=$WORK_DIR/gw.txt
+  for _f in /var/cron/tabs/* /etc/crontab /etc/rc.conf /etc/rc.conf.local /etc/rc.local /etc/periodic.conf /etc/rc.d/* /usr/local/etc/rc.d/*; do
+    [ -f "$_f" ] || continue
+    find "$_f" -maxdepth 0 \( -perm -0020 -o -perm -0002 \) -print
+  done >"$_l"
+  if [ -s "$_l" ]; then
+    result REVIEW "$(wc -l <"$_l" | tr -d ' ') cron/start-up file(s) can be changed by group or other users"; show_file_list "$_l" 10
+    if ask "Remove group and other write permission from them?" y; then fix "Removed group/other write from the cron and start-up files listed in the report" sh -c "tr '\n' '\0' <'$_l' | xargs -0 chmod go-w"; fi
+  else result OK "Cron tables and start-up files are writable only by root"; fi
+  rm -f "$_l"
+
   info "Programs that run as root for any user (SUID/SGID)"
   _l=$WORK_DIR/suid.txt
   # every local disk file system (ZFS puts /home and each user's home on its own), never NFS or devfs
@@ -614,6 +679,12 @@ sec_sudo() {
         fix "Removed nopass from doas.conf" sed -i '' -E '/^[^#]*permit/s/[[:space:]]nopass([[:space:]]|$)/\1/' /usr/local/etc/doas.conf
       fi
     else result OK "doas.conf has no nopass rules"; fi
+    awk '$1 == "permit" { i = 2
+           while (i <= NF && ($i ~ /^(nopass|nolog|persist|keepenv)$/ || $i ~ /^setenv/)) { if ($i ~ /^setenv/) { while (i <= NF && $i !~ /}$/) i++ } i++ }
+           if ($i != "") print $i }' /usr/local/etc/doas.conf | while read -r _who; do
+      case $_who in :wheel|root) continue ;; esac
+      in_list "${_who#:}" $AUTHORIZED_ADMINS || result REVIEW "doas.conf lets '$_who' run commands as root, and it is not an authorized admin"
+    done
   fi
 }
 
@@ -678,9 +749,25 @@ sec_backdoors() {
   if [ -s "$WORK_DIR/s.tmp" ]; then result REVIEW "Unusual /etc/hosts entries (edit with: ee /etc/hosts)"; show_file_list "$WORK_DIR/s.tmp" 10
   else result OK "/etc/hosts only has normal entries"; fi
 
-  info "Kernel modules loaded at boot (/boot/loader.conf)"
-  grep -E '_load="?YES' /boot/loader.conf /boot/loader.conf.local 2>/dev/null >"$WORK_DIR/s.tmp"
-  [ -s "$WORK_DIR/s.tmp" ] && { result REVIEW "Modules loaded at boot - check each one is expected"; show_file_list "$WORK_DIR/s.tmp" 10; }
+  info "PAM (the login system): one 'auth sufficient pam_permit.so' line lets anyone in with any password"
+  grep -HnE '^[[:space:]]*auth[[:space:]]+(sufficient|\[success=done[^]]*\])[[:space:]]+pam_permit\.so|^[^#]*pam_exec\.so' /etc/pam.d/* 2>/dev/null >"$WORK_DIR/s.tmp"
+  if [ -s "$WORK_DIR/s.tmp" ]; then
+    result REVIEW "Suspicious PAM line(s)"; show_file_list "$WORK_DIR/s.tmp" 10
+    for _f in $(grep -E 'pam_permit' "$WORK_DIR/s.tmp" | cut -d: -f1 | sort -u); do
+      ask "Comment out the pam_permit.so 'auth sufficient' line in $_f?" y && fix "Disabled the pam_permit backdoor in $_f" comment_lines "$_f" '^[[:space:]]*auth[[:space:]]+(sufficient|\[success=done[^]]*\])[[:space:]]+pam_permit\.so'
+    done
+  else result OK "No PAM backdoor lines found"; fi
+  for _f in /usr/local/lib/pam_*.so; do
+    [ -f "$_f" ] || continue
+    pkg which -q "$_f" >/dev/null 2>&1 || result REVIEW "PAM module no package installed (possible password stealer): $_f"
+  done
+
+  info "Kernel modules (loaded now, and loaded at boot from /boot/loader.conf)"
+  why "A kernel module runs with full privileges; an exec= line in loader.conf runs a program before the system is up."
+  kldstat 2>/dev/null | awk 'NR > 1 { print "loaded now: " $5 }' >"$WORK_DIR/s.tmp"
+  grep -E '_load="?YES|^[[:space:]]*exec[[:space:]]*=' /boot/loader.conf /boot/loader.conf.local 2>/dev/null >>"$WORK_DIR/s.tmp"
+  [ -s "$WORK_DIR/s.tmp" ] && { result REVIEW "Kernel modules and boot-time settings - drivers are normal, anything else is not"; show_file_list "$WORK_DIR/s.tmp" 15; }
+  grep -qE '^[[:space:]]*exec[[:space:]]*=' /boot/loader.conf /boot/loader.conf.local 2>/dev/null && result REVIEW "An exec= line in /boot/loader.conf runs a program at boot - this is a backdoor unless you can explain it"
   rm -f "$WORK_DIR/s.tmp"
 
   info "Base system file integrity (freebsd-update IDS)"
@@ -703,6 +790,14 @@ sec_logging() {
   _ac=/etc/security/audit_control; _before=$(cksum <"$_ac" 2>/dev/null)
   if [ -f "$_ac" ]; then
     set_conf "$_ac" 'flags' 'flags:lo,aa,ad' ':'
+  fi
+  if service syslogd onestatus >/dev/null 2>&1; then result OK "syslogd is running"
+  elif [ "$MODE" = audit ]; then result REVIEW "syslogd is not running: nothing is being logged"; fi
+  if [ -f /var/log/messages ] && [ -z "$(find /var/log/messages -mtime -1 2>/dev/null)" ]; then
+    result REVIEW "/var/log/messages has not been written to for over a day: check that syslogd is running and /etc/syslog.conf does not discard the logs"
+  fi
+  if grep -Eq '^[^#]*[[:space:]]/dev/null([[:space:]]|$)' /etc/syslog.conf 2>/dev/null; then
+    result REVIEW "/etc/syslog.conf sends some logs to /dev/null (the same as deleting them): $(grep -E '^[^#]*[[:space:]]/dev/null([[:space:]]|$)' /etc/syslog.conf | head -3 | tr '\n' ' ')"
   fi
   if [ "$MODE" = apply ]; then
     if ! service auditd onestatus >/dev/null 2>&1; then fix "Start auditd" service auditd start

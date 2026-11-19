@@ -16,7 +16,7 @@ export const VERIFIED: Record<'linux' | 'windows' | 'freebsd', VerifiedState> = 
     level: 'tested',
     line: 'Script: 77 automated checks pass on Debian 12, Ubuntu 22.04, Ubuntu 24.04 and Mint 21.3.',
     detail:
-      'Each run builds a real container image, plants the usual vulnerabilities (hidden root account, PAM backdoor, cron reverse shell, SUID find, fake sudo alias), runs the script and asserts 77 results, plus a run with no README list and one under umask 0000. The checklist commands themselves are run by hand and are not part of that suite.',
+      'Each run builds a real container image, plants the usual vulnerabilities (hidden root account, PAM backdoor, cron reverse shell, SUID find, fake sudo alias), runs the script and asserts 93 results, plus a run with no README list and one under umask 0000. The checklist commands themselves are run by hand and are not part of that suite.',
   },
   windows: {
     level: 'partial',
